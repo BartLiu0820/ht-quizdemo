@@ -1,0 +1,6 @@
+flask
+flask-sock
+openai
+python-dotenv
+requests
+dashscope
