@@ -51,23 +51,44 @@
             <span style="margin-top: 5px; font-size: 0.8rem;">▶</span>
         </div>
 
-        <div class="chat-container">
+        <div class="chat-container" id="chatContainer">
             <header class="chat-header">
-                编程问答挑战
+                <div class="challenge-header-tag">🧠 编程思考挑战</div>
             </header>
 
-            <div class="chat-history" id="chatHistory">
-                <!-- 聊天记录将显示在这里 -->
-                <div class="message ai-message">
-                    <div class="message-content">你好！我是你的 AI 编程助手。请问有什么我可以帮你的？</div>
-                    <button class="speaker-btn" title="朗读此回复" onclick="speakText('你好！我是你的 AI 编程助手。请问有什么我可以帮你的？', this)">▶</button>
+            <section class="challenge-hero" id="challengeHero">
+                <div class="challenge-card" id="challengeCard">
+                    <button id="challengeSpeakerBtn" class="challenge-speaker-btn" title="朗读这道题目">▶</button>
+                    <div class="challenge-question" id="challengeQuestion">说说你对编程题目的理解，开始你的挑战吧！</div>
+                    <div class="guidance-text" id="guidanceText">随便说说你的想法就可以，不用担心对错，先把你的思路表达出来吧。</div>
                 </div>
-            </div>
+            </section>
+
+            <div class="chat-history" id="chatHistory"></div>
 
             <div class="chat-input-area">
-                <button id="micBtn" class="icon-btn" onclick="toggleVoiceInput()" title="语音输入">🎤</button>
-                <textarea id="userInput" placeholder="输入您的问题... (Enter 发送，Shift+Enter 换行)" rows="1"></textarea>
-                <button id="sendBtn" class="primary-btn" onclick="sendMessage()">发送</button>
+                <div class="answer-panel">
+                    <div class="transcribing-banner" aria-hidden="true">
+                        <span class="transcribing-badge">⏳ 正在生成文本</span>
+                        <div class="transcribing-dots">
+                            <span></span>
+                            <span></span>
+                            <span></span>
+                        </div>
+                    </div>
+                    <div class="section-label">✏️ 我的回答</div>
+                    <div class="answer-controls">
+                        <textarea id="userInput" placeholder="在这里写下你的回答吧…" rows="6"></textarea>
+                    </div>
+                </div>
+                <div class="submit-actions">
+                    <button id="micBtn" class="icon-btn" onclick="toggleVoiceInput()" title="语音作答">
+                        <span class="mic-icon">🎤</span>
+                        <span class="recording-ring"></span>
+                    </button>
+                    <input id="audioUploadInput" type="file" accept="audio/*,.wav,.mp3,.m4a,.aac,.amr,.ogg,.opus,.webm" style="display: none;" onchange="handleAudioFileSelected(event)">
+                    <button id="sendBtn" class="primary-btn" onclick="sendMessage()">🚀 提交我的想法</button>
+                </div>
             </div>
         </div>
     </div>
@@ -77,11 +98,15 @@
         const CORRECT_PASSWORD = '9527';
         let isPasswordVerified = false;
 
-        function verifyPassword() {
+        function verifyPassword(shouldPlaySound = true) {
             const input = document.getElementById('passwordInput');
             const error = document.getElementById('passwordError');
             const passwordLayer = document.getElementById('passwordLayer');
             const settingsLayer = document.getElementById('settingsLayer');
+
+            if (shouldPlaySound) {
+                playButtonClickCue();
+            }
 
             if (input.value === CORRECT_PASSWORD) {
                 isPasswordVerified = true;
@@ -96,7 +121,10 @@
             }
         }
 
-        function lockSettings() {
+        function lockSettings(shouldPlaySound = true) {
+            if (shouldPlaySound) {
+                playButtonClickCue();
+            }
             isPasswordVerified = false;
             document.getElementById('passwordLayer').style.display = 'flex';
             document.getElementById('settingsLayer').style.display = 'none';
@@ -114,9 +142,13 @@
             }
         });
 
-        function toggleSidebar() {
+        function toggleSidebar(shouldPlaySound = true) {
             const sidebar = document.getElementById('sidebar');
             const collapsedToggle = document.getElementById('collapsedSidebarToggle');
+
+            if (shouldPlaySound) {
+                playButtonClickCue();
+            }
 
             if (sidebar.classList.contains('collapsed')) {
                 // 展开
@@ -128,20 +160,229 @@
                 collapsedToggle.style.display = 'flex';
                 // 收起时自动锁定设置
                 if (isPasswordVerified) {
-                    lockSettings();
+                    lockSettings(false);
                 }
             }
         }
 
+        const chatContainer = document.getElementById('chatContainer');
+        const challengeHero = document.getElementById('challengeHero');
         const chatHistory = document.getElementById('chatHistory');
+        const chatInputArea = document.querySelector('.chat-input-area');
+        const answerPanel = document.querySelector('.answer-panel');
         const userInput = document.getElementById('userInput');
         const sendBtn = document.getElementById('sendBtn');
         const micBtn = document.getElementById('micBtn');
+        const audioUploadInput = document.getElementById('audioUploadInput');
+        const challengeQuestion = document.getElementById('challengeQuestion');
+        const guidanceText = document.getElementById('guidanceText');
+        const challengeSpeakerBtn = document.getElementById('challengeSpeakerBtn');
 
         const systemPromptInput = document.getElementById('systemPrompt');
         const initialMessageInput = document.getElementById('initialMessage');
+        const defaultAnswerPlaceholder = '在这里写下你的回答吧…';
 
         let systemPrompt = '';
+        let currentChallengeText = '';
+        let currentAudio = null; // 用于存储当前播放的音频对象
+        let activeSpeakerBtn = null;
+        let speechPlaybackMeta = null;
+        let completionDelayTimer = null;
+        let feedbackPlaybackToken = 0;
+        let completionCard = null;
+        let pendingFeedbackText = '';
+        let isPreparingFeedbackAudio = false;
+        let isManualFeedbackStopPending = false;
+        let isFeedbackPlaybackActive = false;
+        let isTranscribingAudio = false;
+        let isStoppingRecording = false;
+        let submitButtonRestoreTitle = sendBtn.textContent;
+
+        function updateSendButtonState() {
+            const hasInput = userInput.value.trim().length > 0;
+            sendBtn.disabled = !hasInput || isTranscribingAudio;
+        }
+
+        function setTranscribingState(isTranscribing) {
+            isTranscribingAudio = isTranscribing;
+            chatInputArea.classList.toggle('transcribing', isTranscribing);
+            answerPanel.classList.toggle('transcribing', isTranscribing);
+            userInput.classList.toggle('transcribing', isTranscribing);
+            userInput.placeholder = isTranscribing ? '正在识别语音并生成文本，请稍等...' : defaultAnswerPlaceholder;
+            micBtn.disabled = isTranscribing;
+            sendBtn.textContent = isTranscribing ? '⏳ 正在生成文本...' : submitButtonRestoreTitle;
+            updateSendButtonState();
+        }
+
+        function resetSpeakerButton(btnElement) {
+            if (!btnElement) {
+                return;
+            }
+            btnElement.innerHTML = '▶';
+            btnElement.title = btnElement === challengeSpeakerBtn ? '朗读这道题目' : '朗读这段点评';
+            btnElement.classList.remove('playing', 'loading');
+            btnElement.removeAttribute('aria-label');
+        }
+
+        function removeCompletionCard() {
+            if (completionCard) {
+                completionCard.remove();
+                completionCard = null;
+            }
+        }
+
+        function playCelebrationCue() {
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextClass) {
+                return;
+            }
+
+            if (!audioCueContext) {
+                audioCueContext = new AudioContextClass();
+            }
+
+            if (audioCueContext.state === 'suspended') {
+                audioCueContext.resume().catch(() => {});
+            }
+
+            const now = audioCueContext.currentTime;
+            const notes = [784, 988, 1175];
+
+            notes.forEach((frequency, index) => {
+                const oscillator = audioCueContext.createOscillator();
+                const gainNode = audioCueContext.createGain();
+                const startTime = now + index * 0.12;
+                const endTime = startTime + 0.22;
+
+                oscillator.type = 'triangle';
+                oscillator.frequency.setValueAtTime(frequency, startTime);
+
+                gainNode.gain.setValueAtTime(0.0001, startTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.22, startTime + 0.03);
+                gainNode.gain.exponentialRampToValueAtTime(0.0001, endTime);
+
+                oscillator.connect(gainNode);
+                gainNode.connect(audioCueContext.destination);
+                oscillator.start(startTime);
+                oscillator.stop(endTime + 0.02);
+            });
+        }
+
+        function scrollCompletionCardIntoView() {
+            if (!completionCard) {
+                return;
+            }
+
+            requestAnimationFrame(() => {
+                completionCard.scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'nearest'
+                });
+            });
+        }
+
+        function renderCompletionCard() {
+            removeCompletionCard();
+
+            completionCard = document.createElement('div');
+            completionCard.id = 'completionCard';
+            completionCard.className = 'message completion-message';
+            completionCard.setAttribute('aria-hidden', 'false');
+            completionCard.innerHTML = `
+                <div class="challenge-complete-badge">🎉 已完成挑战</div>
+                <div class="challenge-complete-title">你完成了本题挑战！</div>
+                <div class="challenge-complete-subtitle">老师已经听到了你的想法，继续保持表达力。</div>
+                <div class="challenge-complete-points">⭐ 表达力 +1</div>
+            `;
+            chatHistory.appendChild(completionCard);
+            playCelebrationCue();
+            scrollCompletionCardIntoView();
+        }
+
+        function resetChallengeCompletionState() {
+            if (completionDelayTimer) {
+                clearTimeout(completionDelayTimer);
+                completionDelayTimer = null;
+            }
+            pendingFeedbackText = '';
+            isPreparingFeedbackAudio = false;
+            isManualFeedbackStopPending = false;
+            isFeedbackPlaybackActive = false;
+            removeCompletionCard();
+            feedbackPlaybackToken = 0;
+            chatContainer.classList.remove('submitted', 'completed');
+            challengeHero.classList.remove('submitted', 'completed');
+        }
+
+        function scheduleChallengeCompletion(playbackToken = feedbackPlaybackToken) {
+            if (completionDelayTimer) {
+                clearTimeout(completionDelayTimer);
+            }
+
+            completionDelayTimer = window.setTimeout(() => {
+                if (!chatContainer.classList.contains('submitted')) {
+                    return;
+                }
+                if (playbackToken !== feedbackPlaybackToken) {
+                    return;
+                }
+                chatContainer.classList.add('completed');
+                challengeHero.classList.add('completed');
+                isManualFeedbackStopPending = false;
+                isFeedbackPlaybackActive = false;
+                renderCompletionCard();
+                completionDelayTimer = null;
+            }, 3000);
+        }
+
+        function handleTrackedPlaybackInterrupted(playbackToken) {
+            if (playbackToken !== feedbackPlaybackToken || !chatContainer.classList.contains('submitted')) {
+                return;
+            }
+
+            scheduleChallengeCompletion(playbackToken);
+        }
+
+        async function prepareTtsAudio(text) {
+            const response = await fetch('/tts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            });
+
+            const data = await response.json();
+
+            if (!response.ok || !data.audio_url) {
+                throw new Error(data.error || '语音生成失败');
+            }
+
+            return data.audio_url;
+        }
+
+        function renderFeedbackMessage(text) {
+            const msgDiv = appendMessage('ai', text);
+            return msgDiv.querySelector('.speaker-btn');
+        }
+
+        async function startFeedbackPlayback(text, btnElement = null, preparedAudioUrl = null) {
+            feedbackPlaybackToken += 1;
+            const playbackToken = feedbackPlaybackToken;
+            isFeedbackPlaybackActive = true;
+
+            return await speakText(text, btnElement, {
+                trackCompletion: true,
+                playbackToken,
+                audioUrl: preparedAudioUrl,
+                onEnded: () => {
+                    isFeedbackPlaybackActive = false;
+                    scheduleChallengeCompletion(playbackToken);
+                },
+                onInterrupted: () => {
+                    isFeedbackPlaybackActive = false;
+                    handleTrackedPlaybackInterrupted(playbackToken);
+                }
+            });
+        }
 
         // 页面加载时从服务器加载设置
         async function loadSettings() {
@@ -179,6 +420,7 @@
         }
 
         async function applySettings(shouldSave = true) {
+            playButtonClickCue();
             systemPrompt = systemPromptInput.value.trim();
             const initMsg = initialMessageInput.value.trim();
 
@@ -187,14 +429,54 @@
                 await saveSettings();
             }
 
-            // 清空历史记录
-            chatHistory.innerHTML = '';
+            currentChallengeText = initMsg || '🧠 编程思考挑战 · 第1关\n🎯 任务和题目：说说你对一个编程概念的理解，开始你的思考吧！';
+            challengeQuestion.innerHTML = currentChallengeText.replace(/\n/g, '<br>');
 
-            if (initMsg) {
-                appendMessage('ai', initMsg);
-            } else {
-                appendMessage('ai', '你好！我是你的 AI 助手，有什么可以帮你的吗？');
+            // 清空历史记录并隐藏反馈区
+            chatHistory.innerHTML = '';
+            chatHistory.classList.remove('has-feedback');
+            chatInputArea.classList.remove('hidden');
+            resetChallengeCompletionState();
+
+            userInput.value = '';
+            userInput.disabled = false;
+            sendBtn.disabled = false;
+            micBtn.disabled = false;
+            setTranscribingState(false);
+            updateSendButtonState();
+        }
+
+        function canRecordInBrowser() {
+            return Boolean(
+                window.isSecureContext
+                && navigator.mediaDevices
+                && navigator.mediaDevices.getUserMedia
+                && window.MediaRecorder
+            );
+        }
+
+        function getVoiceInputFallbackReason() {
+            if (!window.isSecureContext) {
+                return '当前页面为 HTTP，浏览器通常不允许直接调用麦克风。请选择已录好的音频文件进行识别。';
             }
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                return '当前浏览器不支持网页直接录音。请选择音频文件进行识别。';
+            }
+            if (!window.MediaRecorder) {
+                return '当前浏览器缺少录音组件支持。请选择音频文件进行识别。';
+            }
+            return '当前环境无法直接录音，请选择音频文件进行识别。';
+        }
+
+        function updateVoiceInputAvailability() {
+            if (canRecordInBrowser()) {
+                micBtn.title = '语音作答';
+                micBtn.dataset.mode = 'record';
+                return;
+            }
+
+            micBtn.title = '上传音频作答';
+            micBtn.dataset.mode = 'upload';
         }
 
         // 页面加载时执行
@@ -207,10 +489,10 @@
                 sidebar.classList.add('collapsed');
                 collapsedToggle.style.display = 'flex';
             }
-            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
-                micBtn.style.display = 'none';
-                console.log('浏览器不支持录音功能');
-            }
+            updateVoiceInputAvailability();
+            setTranscribingState(false);
+            updateSendButtonState();
+            userInput.addEventListener('input', updateSendButtonState);
         });
 
         // 语音录制初始化
@@ -218,7 +500,6 @@
         let mediaStream = null;
         let audioMimeType = '';
         let isRecording = false;
-        let currentAudio = null; // 用于存储当前播放的音频对象
         let asrSocket = null;
         let asrSessionId = null;
         let voiceInputBaseText = '';
@@ -229,17 +510,49 @@
         let recordedAudioChunks = [];
         let audioCueContext = null;
 
+        function triggerTrackedPlaybackInterruption(playbackMeta) {
+            if (!playbackMeta || typeof playbackMeta.onInterrupted !== 'function') {
+                return;
+            }
+            playbackMeta.onInterrupted();
+        }
+
         function stopActiveSpeechPlayback() {
-            if (currentAudio && !currentAudio.paused) {
+            const currentPlaybackMeta = speechPlaybackMeta;
+            const currentBtn = activeSpeakerBtn;
+            const shouldScheduleCompletion = Boolean(
+                currentPlaybackMeta?.trackCompletion
+                && isFeedbackPlaybackActive
+                && chatContainer.classList.contains('submitted')
+            );
+
+            if (shouldScheduleCompletion) {
+                isManualFeedbackStopPending = true;
+                isFeedbackPlaybackActive = false;
+            }
+
+            if (currentAudio) {
+                currentAudio.onended = null;
+                currentAudio.onerror = null;
                 currentAudio.pause();
                 currentAudio.currentTime = 0;
             }
-            if (activeSpeakerBtn) {
-                activeSpeakerBtn.innerHTML = '▶';
-                activeSpeakerBtn.title = '朗读此回复';
-                activeSpeakerBtn.classList.remove('playing');
+
+            speechPlaybackMeta = null;
+            currentAudio = null;
+            resetSpeakerButton(currentBtn);
+            if (activeSpeakerBtn === currentBtn) {
                 activeSpeakerBtn = null;
             }
+
+            if (shouldScheduleCompletion) {
+                scheduleChallengeCompletion();
+                return true;
+            }
+
+            isManualFeedbackStopPending = false;
+            triggerTrackedPlaybackInterruption(currentPlaybackMeta);
+            return false;
         }
 
         function getSupportedAudioMimeType() {
@@ -314,6 +627,38 @@
             playRecordingCue(520, 0.18);
         }
 
+        function playButtonClickCue() {
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextClass) {
+                return;
+            }
+
+            if (!audioCueContext) {
+                audioCueContext = new AudioContextClass();
+            }
+
+            if (audioCueContext.state === 'suspended') {
+                audioCueContext.resume().catch(() => {});
+            }
+
+            const now = audioCueContext.currentTime;
+            const oscillator = audioCueContext.createOscillator();
+            const gainNode = audioCueContext.createGain();
+
+            oscillator.type = 'triangle';
+            oscillator.frequency.setValueAtTime(620, now);
+            oscillator.frequency.exponentialRampToValueAtTime(540, now + 0.07);
+
+            gainNode.gain.setValueAtTime(0.0001, now);
+            gainNode.gain.exponentialRampToValueAtTime(0.07, now + 0.012);
+            gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.1);
+
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCueContext.destination);
+            oscillator.start(now);
+            oscillator.stop(now + 0.12);
+        }
+
         function applyStreamingTranscript() {
             if (!preferStreamingPreview) {
                 return;
@@ -368,11 +713,12 @@
             hasStreamingTranscript = true;
         }
 
-        async function fallbackUploadRecordedAudio(audioBlob) {
-            const blobMimeType = audioMimeType || audioBlob.type || 'audio/webm';
+        async function uploadAudioForTranscription(audioSource, fileName, mimeType) {
+            const sourceMimeType = mimeType || audioSource.type || audioMimeType || 'audio/webm';
             const formData = new FormData();
-            const extension = getPreferredAudioExtension(blobMimeType);
-            formData.append('audio', audioBlob, `recording.${extension}`);
+            const extension = getPreferredAudioExtension(sourceMimeType);
+            const resolvedFileName = fileName || `recording.${extension}`;
+            formData.append('audio', audioSource, resolvedFileName);
 
             const response = await fetch('/asr', {
                 method: 'POST',
@@ -385,6 +731,46 @@
             }
 
             return data.text || '';
+        }
+
+        function openAudioFilePicker() {
+            if (!audioUploadInput) {
+                appendMessage('error', '当前环境无法选择音频文件');
+                return;
+            }
+
+            appendMessage('ai', getVoiceInputFallbackReason());
+            audioUploadInput.value = '';
+            audioUploadInput.click();
+        }
+
+        async function handleAudioFileSelected(event) {
+            const file = event.target.files && event.target.files[0];
+            if (!file) {
+                return;
+            }
+
+            const previousPlaceholder = userInput.placeholder;
+            setTranscribingState(true);
+
+            try {
+                const transcript = await uploadAudioForTranscription(file, file.name, file.type);
+                if (!transcript) {
+                    throw new Error('未识别到有效语音内容');
+                }
+                userInput.value = userInput.value
+                    ? `${userInput.value}${transcript}`
+                    : transcript;
+                userInput.focus();
+            } catch (e) {
+                console.error('音频文件识别失败:', e);
+                appendMessage('error', e.message || '音频文件识别失败');
+            } finally {
+                setTranscribingState(false);
+                userInput.placeholder = previousPlaceholder;
+                event.target.value = '';
+                updateSendButtonState();
+            }
         }
 
         async function openAsrStream() {
@@ -465,8 +851,8 @@
         }
 
         async function startRecording() {
-            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
-                throw new Error('当前浏览器不支持录音');
+            if (!canRecordInBrowser()) {
+                throw new Error(getVoiceInputFallbackReason());
             }
 
             audioMimeType = getSupportedAudioMimeType();
@@ -510,8 +896,9 @@
 
             isRecording = true;
             micBtn.classList.add('recording');
-            micBtn.innerText = '🛑';
-            userInput.placeholder = '正在录音，再次点击停止...';
+            micBtn.title = '停止录音';
+            micBtn.querySelector('.mic-icon').innerText = '⏹️';
+            userInput.placeholder = '正在录音，请说出你的答案，再次点击结束...';
             stopActiveSpeechPlayback();
             playRecordingStartCue();
             await new Promise(resolve => setTimeout(resolve, 180));
@@ -528,50 +915,66 @@
             const socket = asrSocket;
             mediaRecorder = null;
             mediaStream = null;
+            setTranscribingState(true);
 
-            await new Promise((resolve, reject) => {
-                recorder.addEventListener('stop', resolve, { once: true });
-                recorder.addEventListener('error', function handleError(event) {
-                    reject(event.error || new Error('录音失败'));
-                }, { once: true });
-                recorder.requestData();
-                recorder.stop();
-            });
+            try {
+                await new Promise((resolve, reject) => {
+                    recorder.addEventListener('stop', resolve, { once: true });
+                    recorder.addEventListener('error', function handleError(event) {
+                        reject(event.error || new Error('录音失败'));
+                    }, { once: true });
+                    recorder.requestData();
+                    recorder.stop();
+                });
 
-            const audioBlob = recordedAudioChunks.length > 0
-                ? new Blob(recordedAudioChunks, { type: audioMimeType || 'audio/webm' })
-                : null;
+                const audioBlob = recordedAudioChunks.length > 0
+                    ? new Blob(recordedAudioChunks, { type: audioMimeType || 'audio/webm' })
+                    : null;
 
-            if (socket && socket.readyState === WebSocket.OPEN) {
-                socket.send(JSON.stringify({ type: 'stop', sessionId: asrSessionId }));
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({ type: 'stop', sessionId: asrSessionId }));
+                }
+
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                }
+
+                if (audioBlob) {
+                    const fallbackText = await uploadAudioForTranscription(audioBlob, null, audioMimeType || audioBlob.type);
+                    finalizedTranscript = fallbackText || finalizedTranscript;
+                    hasStreamingTranscript = Boolean(finalizedTranscript);
+                }
+
+                finalizeStreamingTranscript();
+            } finally {
+                cleanupStreamingConnection();
+                isStoppingRecording = false;
+                setTranscribingState(false);
+                updateSendButtonState();
             }
-
-            if (stream) {
-                stream.getTracks().forEach(track => track.stop());
-            }
-
-            if (audioBlob) {
-                const fallbackText = await fallbackUploadRecordedAudio(audioBlob);
-                finalizedTranscript = fallbackText || finalizedTranscript;
-                hasStreamingTranscript = Boolean(finalizedTranscript);
-            }
-
-            finalizeStreamingTranscript();
-            cleanupStreamingConnection();
         }
 
         async function toggleVoiceInput() {
             if (isRecording) {
+                isStoppingRecording = true;
                 stopRecording();
                 try {
                     await finishRecordingAndTranscribe();
                 } catch (e) {
                     console.error('语音识别失败:', e);
                     appendMessage('error', e.message || '语音识别失败');
-                    cleanupStreamingConnection();
                 } finally {
                     userInput.focus();
                 }
+                return;
+            }
+
+            if (isStoppingRecording || isTranscribingAudio) {
+                return;
+            }
+
+            if (!canRecordInBrowser()) {
+                openAudioFilePicker();
                 return;
             }
 
@@ -587,114 +990,145 @@
 
         function stopRecording() {
             isRecording = false;
+            isStoppingRecording = false;
             micBtn.classList.remove('recording');
-            micBtn.innerText = '🎤';
-            userInput.placeholder = '输入您的问题... (Enter 发送，Shift+Enter 换行)';
+            micBtn.title = '语音作答';
+            micBtn.querySelector('.mic-icon').innerText = '🎤';
+            userInput.placeholder = defaultAnswerPlaceholder;
             playRecordingStopCue();
         }
 
         // --- TTS (Text-to-Speech) 逻辑，替换为 Qwen TTS ---
-        let activeSpeakerBtn = null;
+        async function speakText(text, btnElement = null, options = {}) {
+            const previousPlaybackMeta = speechPlaybackMeta;
+            const previousBtn = activeSpeakerBtn;
 
-        async function speakText(text, btnElement = null) {
-            function resetActiveBtn() {
-                if (activeSpeakerBtn) {
-                    activeSpeakerBtn.innerHTML = '▶';
-                    activeSpeakerBtn.title = '朗读此回复';
-                    activeSpeakerBtn.classList.remove('playing');
-                    activeSpeakerBtn = null;
-                }
-            }
-
-            // 如果点击的是当前正在朗读的同一个按钮，并且正在朗读中，则停止朗读
             if (btnElement && activeSpeakerBtn === btnElement && currentAudio && !currentAudio.paused) {
-                currentAudio.pause();
-                currentAudio.currentTime = 0;
-                resetActiveBtn(); // 立即手动重置状态
-                return;
+                stopActiveSpeechPlayback();
+                return true;
             }
 
-            // 在朗读新内容前，先停止当前正在朗读的内容
             if (currentAudio) {
+                if (currentAudio.onended) {
+                    currentAudio.onended = null;
+                }
+                if (currentAudio.onerror) {
+                    currentAudio.onerror = null;
+                }
                 currentAudio.pause();
                 currentAudio.currentTime = 0;
             }
-            resetActiveBtn();
+
+            if (isManualFeedbackStopPending) {
+                isManualFeedbackStopPending = false;
+            } else {
+                triggerTrackedPlaybackInterruption(previousPlaybackMeta);
+            }
+
+            speechPlaybackMeta = null;
+            currentAudio = null;
+            resetSpeakerButton(previousBtn);
+            if (activeSpeakerBtn === previousBtn) {
+                activeSpeakerBtn = null;
+            }
 
             if (btnElement) {
                 activeSpeakerBtn = btnElement;
-                btnElement.innerHTML = '⏳'; // 变成加载图标
+                btnElement.innerHTML = '◌';
                 btnElement.title = '正在生成语音...';
-                btnElement.classList.add('playing');
+                btnElement.setAttribute('aria-label', '正在生成语音');
+                btnElement.classList.add('loading');
+                btnElement.classList.remove('playing');
             }
 
             try {
-                const response = await fetch('/tts', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text: text })
-                });
+                const audioUrl = options.audioUrl || await prepareTtsAudio(text);
+                const playbackAudio = new Audio(audioUrl);
+                currentAudio = playbackAudio;
+                speechPlaybackMeta = options;
 
-                const data = await response.json();
+                playbackAudio.onplay = () => {
+                    if (btnElement && activeSpeakerBtn === btnElement) {
+                        btnElement.innerHTML = '⏹️';
+                        btnElement.title = '停止朗读';
+                        btnElement.setAttribute('aria-label', '停止朗读');
+                        btnElement.classList.remove('loading');
+                        btnElement.classList.add('playing');
+                    }
+                };
 
-                if (response.ok && data.audio_url) {
-                    currentAudio = new Audio(data.audio_url);
-                    currentAudio.volume = 1.0;
+                playbackAudio.onended = () => {
+                    const completedPlaybackMeta = speechPlaybackMeta;
+                    const completedBtn = activeSpeakerBtn;
+                    speechPlaybackMeta = null;
+                    currentAudio = null;
+                    resetSpeakerButton(completedBtn);
+                    if (activeSpeakerBtn === completedBtn) {
+                        activeSpeakerBtn = null;
+                    }
+                    if (completedPlaybackMeta && typeof completedPlaybackMeta.onEnded === 'function') {
+                        completedPlaybackMeta.onEnded();
+                    }
+                };
 
-                    currentAudio.onplay = () => {
-                        if (btnElement) {
-                            btnElement.innerHTML = '⏹️'; // 变成停止图标
-                            btnElement.title = '停止朗读';
-                        }
-                    };
+                playbackAudio.onerror = (e) => {
+                    console.log('朗读出错', e);
+                    const erroredPlaybackMeta = speechPlaybackMeta;
+                    const erroredBtn = activeSpeakerBtn;
+                    speechPlaybackMeta = null;
+                    currentAudio = null;
+                    resetSpeakerButton(erroredBtn);
+                    if (activeSpeakerBtn === erroredBtn) {
+                        activeSpeakerBtn = null;
+                    }
+                    if (erroredPlaybackMeta && typeof erroredPlaybackMeta.onInterrupted === 'function') {
+                        erroredPlaybackMeta.onInterrupted();
+                    }
+                };
 
-                    currentAudio.onended = () => {
-                        console.log("朗读结束");
-                        resetActiveBtn();
-                    };
-
-                    currentAudio.onerror = (e) => {
-                        console.log("朗读出错", e);
-                        resetActiveBtn();
-                    };
-
-                    currentAudio.play();
-                } else {
-                    console.error("语音生成失败", data.error);
-                    resetActiveBtn();
-                }
+                await playbackAudio.play();
+                return true;
             } catch (e) {
-                console.error("请求 TTS 接口出错", e);
-                resetActiveBtn();
+                console.error('请求 TTS 接口出错', e);
+                if (options && typeof options.onInterrupted === 'function') {
+                    options.onInterrupted();
+                }
+                speechPlaybackMeta = null;
+                currentAudio = null;
+                if (options?.trackCompletion) {
+                    isFeedbackPlaybackActive = false;
+                }
+                resetSpeakerButton(btnElement);
+                if (activeSpeakerBtn === btnElement) {
+                    activeSpeakerBtn = null;
+                }
+                throw e;
             }
         }
-
-        // 处理回车发送 (Shift+Enter 换行)
-        userInput.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-            }
-        });
 
         async function sendMessage() {
             const message = userInput.value.trim();
             if (!message) return;
 
-            // 禁用输入和按钮
+            playButtonClickCue();
+            resetChallengeCompletionState();
+            pendingFeedbackText = '';
+            isPreparingFeedbackAudio = true;
             userInput.value = '';
             userInput.disabled = true;
             sendBtn.disabled = true;
+            micBtn.disabled = true;
+            chatHistory.classList.add('has-feedback');
+            chatInputArea.classList.add('hidden');
+            chatContainer.classList.add('submitted');
+            challengeHero.classList.add('submitted');
 
-            // 显示用户消息
             appendMessage('user', message);
 
-            // 显示加载状态
             const loadingId = 'loading-' + Date.now();
             appendLoading(loadingId);
 
             try {
-                // 发送请求给后端
                 const response = await fetch('/chat', {
                     method: 'POST',
                     headers: {
@@ -705,75 +1139,94 @@
 
                 const data = await response.json();
 
-                // 移除加载状态
+                if (!response.ok) {
+                    throw new Error(data.error || '发生未知错误');
+                }
+
+                pendingFeedbackText = data.response;
+                const audioUrl = await prepareTtsAudio(data.response);
+
                 removeMessage(loadingId);
 
-                if (response.ok) {
-                    // 先把消息渲染出来，拿到渲染后的容器内的喇叭按钮
-                    const msgDiv = appendMessage('ai', data.response);
-                    // AI 回复后自动朗读，传入喇叭按钮以同步状态
-                    const speakerBtn = msgDiv.querySelector('.speaker-btn');
-                    speakText(data.response, speakerBtn);
-                } else {
-                    appendMessage('error', data.error || '发生未知错误');
+                if (pendingFeedbackText !== data.response || !chatContainer.classList.contains('submitted')) {
+                    return;
                 }
+
+                const speakerBtn = renderFeedbackMessage(data.response);
+                pendingFeedbackText = '';
+                await startFeedbackPlayback(data.response, speakerBtn, audioUrl);
             } catch (error) {
                 removeMessage(loadingId);
-                appendMessage('error', '网络请求失败，请检查后端服务是否运行。');
+                pendingFeedbackText = '';
+                appendMessage('error', error.message || '网络请求失败，请检查后端服务是否运行。');
             } finally {
-                // 恢复输入和按钮
-                userInput.disabled = false;
-                sendBtn.disabled = false;
-                userInput.focus();
+                isPreparingFeedbackAudio = false;
             }
         }
 
         function appendMessage(sender, text) {
             const msgDiv = document.createElement('div');
+            const titleDiv = document.createElement('div');
+            titleDiv.className = 'message-title';
 
-            // 创建消息内容容器
             const contentDiv = document.createElement('div');
             contentDiv.className = 'message-content';
 
             if (sender === 'user') {
-                msgDiv.className = 'message user-message';
-                contentDiv.innerHTML = text;
+                msgDiv.className = 'message user-message answer-card';
+                titleDiv.textContent = '✏️ 我的回答';
+                contentDiv.innerHTML = text.replace(/\n/g, '<br>');
+                msgDiv.appendChild(titleDiv);
                 msgDiv.appendChild(contentDiv);
             } else if (sender === 'ai') {
-                msgDiv.className = 'message ai-message';
-
-                // 简单处理换行
-                const formattedText = text.replace(/\n/g, '<br>');
-                contentDiv.innerHTML = formattedText;
+                msgDiv.className = 'message ai-message feedback-card';
+                titleDiv.textContent = '🎉 老师点评';
+                contentDiv.innerHTML = text.replace(/\n/g, '<br>');
+                msgDiv.appendChild(titleDiv);
                 msgDiv.appendChild(contentDiv);
 
-                // 创建喇叭按钮用于二次朗读
                 const speakerBtn = document.createElement('button');
                 speakerBtn.className = 'speaker-btn';
                 speakerBtn.innerHTML = '▶';
-                speakerBtn.title = '朗读此回复';
+                speakerBtn.title = '朗读这段点评';
                 speakerBtn.onclick = function() {
-                    speakText(text, speakerBtn); // 传入原始文本和当前按钮自身进行状态切换
+                    playButtonClickCue();
+                    startFeedbackPlayback(text, speakerBtn);
                 };
                 msgDiv.appendChild(speakerBtn);
-
             } else if (sender === 'error') {
                 msgDiv.className = 'message error-message';
+                titleDiv.textContent = '💡 温馨提示';
                 contentDiv.innerHTML = text;
+                msgDiv.appendChild(titleDiv);
                 msgDiv.appendChild(contentDiv);
             }
 
             chatHistory.appendChild(msgDiv);
             scrollToBottom();
 
-            return msgDiv; // 返回刚创建的消息元素，以便后续操作（如获取内部的喇叭按钮）
+            return msgDiv;
         }
 
         function appendLoading(id) {
             const msgDiv = document.createElement('div');
             msgDiv.id = id;
             msgDiv.className = 'message ai-message loading';
-            msgDiv.innerHTML = '正在思考...';
+            msgDiv.innerHTML = `
+                <div class="message-title">🧠 老师正在准备点评</div>
+                <div class="message-content">
+                    <div class="loading-text">老师正在生成点评语音，请稍等...</div>
+                    <div class="loading-dots" aria-hidden="true">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+                    <div class="loading-shimmer" aria-hidden="true">
+                        <span></span>
+                        <span></span>
+                    </div>
+                </div>
+            `;
             chatHistory.appendChild(msgDiv);
             scrollToBottom();
         }
@@ -786,6 +1239,14 @@
         function scrollToBottom() {
             chatHistory.scrollTop = chatHistory.scrollHeight;
         }
+
+        challengeSpeakerBtn.onclick = function() {
+            if (!currentChallengeText) {
+                return;
+            }
+            playButtonClickCue();
+            speakText(currentChallengeText, challengeSpeakerBtn);
+        };
     </script>
 </body>
 </html>

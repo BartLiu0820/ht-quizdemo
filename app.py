@@ -25,6 +25,7 @@ sock = Sock(app)
 
 # 设置文件路径
 SETTINGS_FILE = os.path.join(os.path.dirname(__file__), 'settings.json')
+PLAYER_LOG_FILE = os.path.join(os.path.dirname(__file__), 'player.log')
 
 def load_settings():
     """从文件加载设置"""
@@ -53,6 +54,32 @@ def save_settings(settings):
         print(f"保存设置失败: {e}")
         return False
 
+
+def get_client_ip():
+    forwarded_for = request.headers.get('X-Forwarded-For', '')
+    if forwarded_for:
+        return forwarded_for.split(',')[0].strip()
+    return request.remote_addr or 'unknown'
+
+
+def append_player_log(user_message, teacher_feedback, status='success', error_message=None):
+    record = {
+        'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+        'client_ip': get_client_ip(),
+        'status': status,
+        'user_message': user_message,
+        'teacher_feedback': teacher_feedback
+    }
+
+    if error_message:
+        record['error_message'] = error_message
+
+    try:
+        with open(PLAYER_LOG_FILE, 'a', encoding='utf-8') as log_file:
+            log_file.write(json.dumps(record, ensure_ascii=False) + '\n')
+    except Exception as e:
+        print(f"写入 player.log 失败: {e}")
+
 # 获取配置信息
 API_KEY = os.environ.get("API_KEY")
 BASE_URL = os.environ.get("BASE_URL")
@@ -67,9 +94,12 @@ ASR_MIME_TYPE_TO_FORMAT = {
     'audio/wav': 'wav',
     'audio/x-wav': 'wav',
     'audio/wave': 'wav',
+    'audio/mp4': 'm4a',
+    'audio/x-m4a': 'm4a',
+    'audio/m4a': 'm4a',
+    'audio/aac': 'aac',
     'audio/mpeg': 'mp3',
     'audio/mp3': 'mp3',
-    'audio/aac': 'aac',
     'audio/amr': 'amr'
 }
 
@@ -93,6 +123,7 @@ def detect_asr_format(content_type, filename):
         extension_to_format = {
             'wav': 'wav',
             'mp3': 'mp3',
+            'm4a': 'm4a',
             'aac': 'aac',
             'amr': 'amr',
             'opus': 'opus',
@@ -530,10 +561,10 @@ def asr():
     except wave.Error:
         return jsonify({"error": "上传的音频无法解析，请重试"}), 400
     except FileNotFoundError:
-        return jsonify({"error": "缺少 ffmpeg，无法处理当前录音格式"}), 500
+        return jsonify({"error": "服务器缺少 ffmpeg，当前仅建议上传 WAV/MP3 音频，或安装 ffmpeg 后再试 M4A/OGG/WEBM。"}), 500
     except Exception as e:
         print(f"ASR Error: {e}")
-        return jsonify({"error": f"语音识别失败: {str(e)}"}), 500
+        return jsonify({"error": f"语音识别失败，请优先尝试 WAV、MP3、M4A 或 OGG。详情: {str(e)}"}), 500
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -572,6 +603,7 @@ def chat():
         
         # 提取回复文本
         ai_response = response_data['choices'][0]['message']['content']
+        append_player_log(user_message, ai_response)
         return jsonify({"response": ai_response})
 
     except requests.exceptions.ConnectionError as ce:
