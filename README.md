@@ -12,6 +12,7 @@ Current Version: v2.0.0
   - Enhanced sidebar with password protection for settings
   - Added challenge speaker button to read questions aloud
   - Added completion animations and celebration effects
+  - Added challenge image upload in settings sidebar with responsive display
 
 - **v1.1.0**: Removed `openai` package dependency to bypass local system proxy issues, switched to using `requests` with explicit proxy bypassing (`session.trust_env = False`).
 

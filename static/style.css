@@ -221,6 +221,92 @@ body {
     margin-bottom: 10px;
 }
 
+/* Image Upload Styles */
+.image-upload-area {
+    position: relative;
+    width: 100%;
+    min-height: 120px;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.upload-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 16px 12px;
+    border: 2px dashed #d9d9d9;
+    border-radius: 8px;
+    background: #fafafa;
+    cursor: pointer;
+    transition: all 0.2s;
+    min-height: 120px;
+}
+
+.upload-placeholder:hover {
+    border-color: #1890ff;
+    background: #f0f9ff;
+}
+
+.upload-icon {
+    font-size: 1.8rem;
+    opacity: 0.7;
+}
+
+.upload-text {
+    font-size: 0.85rem;
+    color: #666;
+    font-weight: 500;
+}
+
+.upload-hint {
+    font-size: 0.75rem;
+    color: #999;
+}
+
+.upload-preview {
+    position: relative;
+    width: 100%;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #f5f5f5;
+    border: 1px solid #e8e8e8;
+}
+
+.upload-preview img {
+    width: 100%;
+    height: auto;
+    max-height: 150px;
+    object-fit: cover;
+    display: block;
+}
+
+.remove-image-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.5);
+    color: #fff;
+    border: none;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s;
+    z-index: 2;
+}
+
+.remove-image-btn:hover {
+    background: rgba(0, 0, 0, 0.7);
+}
+
 #settingsLayer textarea {
     display: block;
     width: 100%;
@@ -332,6 +418,45 @@ body {
     display: flex;
     flex-direction: column;
     justify-content: center;
+}
+
+.challenge-card.has-image {
+    padding-right: 24px;
+}
+
+.challenge-content-wrapper {
+    display: flex;
+    gap: 20px;
+    align-items: stretch;
+    width: 100%;
+}
+
+.challenge-text-content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.challenge-image-container {
+    flex-shrink: 0;
+    width: 35%;
+    min-width: 200px;
+    max-width: 400px;
+    display: flex;
+    align-items: stretch;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+    background: #fff;
+}
+
+.challenge-image-container img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
 }
 
 .challenge-complete-badge {

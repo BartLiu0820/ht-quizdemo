@@ -35,6 +35,22 @@
                             <h3>初始问候语</h3>
                             <textarea id="initialMessage" placeholder="设置 AI 的第一句话..."></textarea>
                         </div>
+
+                        <div class="settings-input-group">
+                            <h3>题目配图</h3>
+                            <div class="image-upload-area" id="imageUploadArea">
+                                <input type="file" id="challengeImageInput" accept="image/*" style="display: none;" onchange="handleChallengeImageUpload(event)">
+                                <div class="upload-placeholder" id="uploadPlaceholder" onclick="document.getElementById('challengeImageInput').click()">
+                                    <span class="upload-icon">📷</span>
+                                    <span class="upload-text">点击上传图片</span>
+                                    <span class="upload-hint">支持 JPG、PNG、GIF 格式</span>
+                                </div>
+                                <div class="upload-preview" id="uploadPreview" style="display: none;">
+                                    <img id="previewImage" src="" alt="预览图">
+                                    <button class="remove-image-btn" onclick="removeChallengeImage(event)" title="删除图片">×</button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="settings-actions">
@@ -59,8 +75,15 @@
             <section class="challenge-hero" id="challengeHero">
                 <div class="challenge-card" id="challengeCard">
                     <button id="challengeSpeakerBtn" class="challenge-speaker-btn" title="朗读这道题目">▶</button>
-                    <div class="challenge-question" id="challengeQuestion">说说你对编程题目的理解，开始你的挑战吧！</div>
-                    <div class="guidance-text" id="guidanceText">随便说说你的想法就可以，不用担心对错，先把你的思路表达出来吧。</div>
+                    <div class="challenge-content-wrapper">
+                        <div class="challenge-text-content">
+                            <div class="challenge-question" id="challengeQuestion">说说你对编程题目的理解，开始你的挑战吧！</div>
+                            <div class="guidance-text" id="guidanceText">随便说说你的想法就可以，不用担心对错，先把你的思路表达出来吧。</div>
+                        </div>
+                        <div class="challenge-image-container" id="challengeImageContainer" style="display: none;">
+                            <img id="challengeImageDisplay" src="" alt="题目配图">
+                        </div>
+                    </div>
                 </div>
             </section>
 
@@ -1247,6 +1270,91 @@
             playButtonClickCue();
             speakText(currentChallengeText, challengeSpeakerBtn);
         };
+
+        // ============ 题目配图功能 ============
+        let challengeImageData = null;
+
+        function handleChallengeImageUpload(event) {
+            const file = event.target.files && event.target.files[0];
+            if (!file) {
+                return;
+            }
+
+            if (!file.type.startsWith('image/')) {
+                alert('请上传图片文件（JPG、PNG、GIF 等）');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                challengeImageData = e.target.result;
+                displayChallengeImage(challengeImageData);
+                showUploadPreview(challengeImageData);
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function displayChallengeImage(imageData) {
+            const container = document.getElementById('challengeImageContainer');
+            const display = document.getElementById('challengeImageDisplay');
+            if (container && display && imageData) {
+                display.src = imageData;
+                container.style.display = 'block';
+                // 调整卡片布局
+                const card = document.getElementById('challengeCard');
+                if (card) {
+                    card.classList.add('has-image');
+                }
+            }
+        }
+
+        function showUploadPreview(imageData) {
+            const preview = document.getElementById('uploadPreview');
+            const placeholder = document.getElementById('uploadPlaceholder');
+            const previewImg = document.getElementById('previewImage');
+            if (preview && placeholder && previewImg) {
+                previewImg.src = imageData;
+                preview.style.display = 'block';
+                placeholder.style.display = 'none';
+            }
+        }
+
+        function removeChallengeImage(event) {
+            if (event) {
+                event.stopPropagation();
+            }
+            challengeImageData = null;
+
+            // 清除预览
+            const preview = document.getElementById('uploadPreview');
+            const placeholder = document.getElementById('uploadPlaceholder');
+            const previewImg = document.getElementById('previewImage');
+            if (preview && placeholder && previewImg) {
+                preview.style.display = 'none';
+                placeholder.style.display = 'flex';
+                previewImg.src = '';
+            }
+
+            // 清除显示
+            const container = document.getElementById('challengeImageContainer');
+            const display = document.getElementById('challengeImageDisplay');
+            if (container && display) {
+                container.style.display = 'none';
+                display.src = '';
+            }
+
+            // 清除文件输入
+            const input = document.getElementById('challengeImageInput');
+            if (input) {
+                input.value = '';
+            }
+
+            // 移除卡片样式
+            const card = document.getElementById('challengeCard');
+            if (card) {
+                card.classList.remove('has-image');
+            }
+        }
     </script>
 </body>
 </html>
