@@ -418,17 +418,20 @@ body {
     display: flex;
     flex-direction: column;
     justify-content: center;
+    overflow: hidden;
 }
 
 .challenge-card.has-image {
-    padding-right: 24px;
+    padding-right: 72px;
+    padding-bottom: 28px;
 }
 
 .challenge-content-wrapper {
     display: flex;
-    gap: 20px;
+    gap: 16px;
     align-items: stretch;
     width: 100%;
+    min-height: 0;
 }
 
 .challenge-text-content {
@@ -437,15 +440,24 @@ body {
     display: flex;
     flex-direction: column;
     justify-content: center;
+    min-height: 0;
+}
+body.modal-open {
+    overflow: hidden;
 }
 
 .challenge-image-container {
+    position: relative;
     flex-shrink: 0;
-    width: 35%;
-    min-width: 200px;
-    max-width: 400px;
+    width: 32%;
+    min-width: 180px;
+    max-width: 360px;
+    max-height: 100%;
+    margin-right: 28px;
     display: flex;
-    align-items: stretch;
+    align-items: center;
+    justify-content: center;
+    align-self: stretch;
     border-radius: 12px;
     overflow: hidden;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
@@ -455,8 +467,82 @@ body {
 .challenge-image-container img {
     width: 100%;
     height: 100%;
-    object-fit: cover;
+    max-height: 100%;
+    object-fit: contain;
     display: block;
+}
+
+.challenge-image-zoom-btn {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 50%;
+    background: rgba(20, 20, 20, 0.55);
+    color: #fff;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s, transform 0.2s;
+    z-index: 2;
+}
+
+.challenge-image-zoom-btn:hover {
+    background: rgba(20, 20, 20, 0.75);
+    transform: scale(1.05);
+}
+
+.challenge-image-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(10, 18, 30, 0.72);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    z-index: 999;
+}
+
+.challenge-image-modal-content {
+    position: relative;
+    max-width: min(92vw, 1200px);
+    max-height: 92vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.challenge-image-modal-content img {
+    max-width: 100%;
+    max-height: 92vh;
+    display: block;
+    border-radius: 16px;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+    background: #fff;
+}
+
+.challenge-image-modal-close {
+    position: absolute;
+    top: -12px;
+    right: -12px;
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.92);
+    color: #333;
+    font-size: 1.3rem;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
 }
 
 .challenge-complete-badge {
@@ -518,6 +604,7 @@ body {
     justify-content: center;
     align-items: center;
     transition: all 0.2s;
+    z-index: 2;
 }
 
 .challenge-speaker-btn:hover,
@@ -883,32 +970,38 @@ textarea#userInput.transcribing:focus {
 }
 
 .icon-btn {
-    width: 56px;
+    min-width: 124px;
     height: 56px;
+    padding: 0 18px;
     border-radius: 18px;
     background: #fff7e6;
     color: #d48806;
     border: 2px solid #ffd591;
-    font-size: 1.3rem;
-    display: flex;
+    font-size: 1rem;
+    display: inline-flex;
     justify-content: center;
     align-items: center;
+    gap: 8px;
     cursor: pointer;
     transition: all 0.2s;
     flex-shrink: 0;
     position: relative;
-}
-
-.icon-btn:hover {
-    color: #ad6800;
-    border-color: #ffc069;
-    background: #fff1b8;
+    white-space: nowrap;
 }
 
 .icon-btn .mic-icon {
     position: relative;
     z-index: 2;
     transition: transform 0.2s ease;
+    font-size: 1.15rem;
+}
+
+.icon-btn .icon-btn-label {
+    position: relative;
+    z-index: 2;
+    font-size: 0.96rem;
+    font-weight: 600;
+    line-height: 1;
 }
 
 .icon-btn .recording-ring {
@@ -1044,6 +1137,27 @@ textarea#userInput.transcribing:focus {
     .main-container {
         width: 96vw;
         height: 96vh;
+    }
+
+    .challenge-content-wrapper {
+        flex-direction: column;
+    }
+
+    .challenge-image-container {
+        width: 100%;
+        min-width: 0;
+        max-width: none;
+        max-height: 280px;
+        margin-right: 0;
+    }
+
+    .challenge-image-modal {
+        padding: 16px;
+    }
+
+    .challenge-image-modal-close {
+        top: 8px;
+        right: 8px;
     }
 
     .chat-header,

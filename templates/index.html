@@ -82,10 +82,18 @@
                         </div>
                         <div class="challenge-image-container" id="challengeImageContainer" style="display: none;">
                             <img id="challengeImageDisplay" src="" alt="题目配图">
+                            <button id="challengeImageZoomBtn" class="challenge-image-zoom-btn" type="button" onclick="openChallengeImageModal(event)" title="放大查看图片">⤢</button>
                         </div>
                     </div>
                 </div>
             </section>
+
+            <div class="challenge-image-modal" id="challengeImageModal" style="display: none;" onclick="closeChallengeImageModal()">
+                <div class="challenge-image-modal-content" onclick="event.stopPropagation()">
+                    <button class="challenge-image-modal-close" type="button" onclick="closeChallengeImageModal()" title="关闭预览">×</button>
+                    <img id="challengeImageModalDisplay" src="" alt="题目配图大图预览">
+                </div>
+            </div>
 
             <div class="chat-history" id="chatHistory"></div>
 
@@ -107,6 +115,7 @@
                 <div class="submit-actions">
                     <button id="micBtn" class="icon-btn" onclick="toggleVoiceInput()" title="语音作答">
                         <span class="mic-icon">🎤</span>
+                        <span class="icon-btn-label">语音输入</span>
                         <span class="recording-ring"></span>
                     </button>
                     <input id="audioUploadInput" type="file" accept="audio/*,.wav,.mp3,.m4a,.aac,.amr,.ogg,.opus,.webm" style="display: none;" onchange="handleAudioFileSelected(event)">
@@ -242,7 +251,7 @@
                 return;
             }
             btnElement.innerHTML = '▶';
-            btnElement.title = btnElement === challengeSpeakerBtn ? '朗读这道题目' : '朗读这段点评';
+            btnElement.title = btnElement === challengeSpeakerBtn ? '朗读这道题目' : '朗读这段反馈';
             btnElement.classList.remove('playing', 'loading');
             btnElement.removeAttribute('aria-label');
         }
@@ -415,7 +424,13 @@
                     const settings = await response.json();
                     systemPromptInput.value = settings.system_prompt || '';
                     initialMessageInput.value = settings.initial_message || '';
-                    // 自动应用设置到界面
+                    challengeImageData = settings.challenge_image || null;
+                    if (challengeImageData) {
+                        displayChallengeImage(challengeImageData);
+                        showUploadPreview(challengeImageData);
+                    } else {
+                        removeChallengeImage();
+                    }
                     applySettings(false);
                 }
             } catch (e) {
@@ -423,11 +438,11 @@
             }
         }
 
-        // 保存设置到服务器
         async function saveSettings() {
             const settings = {
                 system_prompt: systemPromptInput.value.trim(),
-                initial_message: initialMessageInput.value.trim()
+                initial_message: initialMessageInput.value.trim(),
+                challenge_image: challengeImageData || ''
             };
             try {
                 const response = await fetch('/settings', {
@@ -1203,7 +1218,7 @@
                 msgDiv.appendChild(contentDiv);
             } else if (sender === 'ai') {
                 msgDiv.className = 'message ai-message feedback-card';
-                titleDiv.textContent = '🎉 老师点评';
+                titleDiv.textContent = '🎉 老师反馈';
                 contentDiv.innerHTML = text.replace(/\n/g, '<br>');
                 msgDiv.appendChild(titleDiv);
                 msgDiv.appendChild(contentDiv);
@@ -1211,7 +1226,7 @@
                 const speakerBtn = document.createElement('button');
                 speakerBtn.className = 'speaker-btn';
                 speakerBtn.innerHTML = '▶';
-                speakerBtn.title = '朗读这段点评';
+                speakerBtn.title = '朗读这段反馈';
                 speakerBtn.onclick = function() {
                     playButtonClickCue();
                     startFeedbackPlayback(text, speakerBtn);
@@ -1236,9 +1251,9 @@
             msgDiv.id = id;
             msgDiv.className = 'message ai-message loading';
             msgDiv.innerHTML = `
-                <div class="message-title">🧠 老师正在准备点评</div>
+                <div class="message-title">🧠 老师正在准备解析</div>
                 <div class="message-content">
-                    <div class="loading-text">老师正在生成点评语音，请稍等...</div>
+                    <div class="loading-text">老师正在生成解析，请稍等...</div>
                     <div class="loading-dots" aria-hidden="true">
                         <span></span>
                         <span></span>
@@ -1297,15 +1312,41 @@
         function displayChallengeImage(imageData) {
             const container = document.getElementById('challengeImageContainer');
             const display = document.getElementById('challengeImageDisplay');
+            const modalDisplay = document.getElementById('challengeImageModalDisplay');
             if (container && display && imageData) {
                 display.src = imageData;
+                if (modalDisplay) {
+                    modalDisplay.src = imageData;
+                }
                 container.style.display = 'block';
-                // 调整卡片布局
                 const card = document.getElementById('challengeCard');
                 if (card) {
                     card.classList.add('has-image');
                 }
             }
+        }
+
+        function openChallengeImageModal(event) {
+            if (event) {
+                event.stopPropagation();
+            }
+            const modal = document.getElementById('challengeImageModal');
+            const modalDisplay = document.getElementById('challengeImageModalDisplay');
+            if (!modal || !modalDisplay || !challengeImageData) {
+                return;
+            }
+            modalDisplay.src = challengeImageData;
+            modal.style.display = 'flex';
+            document.body.classList.add('modal-open');
+        }
+
+        function closeChallengeImageModal() {
+            const modal = document.getElementById('challengeImageModal');
+            if (!modal) {
+                return;
+            }
+            modal.style.display = 'none';
+            document.body.classList.remove('modal-open');
         }
 
         function showUploadPreview(imageData) {
@@ -1324,6 +1365,7 @@
                 event.stopPropagation();
             }
             challengeImageData = null;
+            closeChallengeImageModal();
 
             // 清除预览
             const preview = document.getElementById('uploadPreview');
@@ -1338,9 +1380,13 @@
             // 清除显示
             const container = document.getElementById('challengeImageContainer');
             const display = document.getElementById('challengeImageDisplay');
+            const modalDisplay = document.getElementById('challengeImageModalDisplay');
             if (container && display) {
                 container.style.display = 'none';
                 display.src = '';
+            }
+            if (modalDisplay) {
+                modalDisplay.src = '';
             }
 
             // 清除文件输入

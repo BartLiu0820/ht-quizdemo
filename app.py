@@ -31,7 +31,8 @@ def load_settings():
     """从文件加载设置"""
     default_settings = {
         'system_prompt': '',
-        'initial_message': ''
+        'initial_message': '',
+        'challenge_image': ''
     }
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -405,7 +406,8 @@ def update_settings():
     data = request.json
     settings = {
         'system_prompt': data.get('system_prompt', ''),
-        'initial_message': data.get('initial_message', '')
+        'initial_message': data.get('initial_message', ''),
+        'challenge_image': data.get('challenge_image', '')
     }
     if save_settings(settings):
         return jsonify({"success": True})
