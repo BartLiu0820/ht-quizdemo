@@ -428,8 +428,6 @@
                     if (challengeImageData) {
                         displayChallengeImage(challengeImageData);
                         showUploadPreview(challengeImageData);
-                    } else {
-                        removeChallengeImage();
                     }
                     applySettings(false);
                 }
@@ -1331,11 +1329,9 @@
                 event.stopPropagation();
             }
             const modal = document.getElementById('challengeImageModal');
-            const modalDisplay = document.getElementById('challengeImageModalDisplay');
-            if (!modal || !modalDisplay || !challengeImageData) {
+            if (!modal || !challengeImageData) {
                 return;
             }
-            modalDisplay.src = challengeImageData;
             modal.style.display = 'flex';
             document.body.classList.add('modal-open');
         }

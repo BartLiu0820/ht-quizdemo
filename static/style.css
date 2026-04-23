@@ -19,6 +19,10 @@ body {
     color: #333;
 }
 
+body.modal-open {
+    overflow: hidden;
+}
+
 .main-container {
     display: flex;
     height: 95vh;
@@ -442,10 +446,6 @@ body {
     justify-content: center;
     min-height: 0;
 }
-body.modal-open {
-    overflow: hidden;
-}
-
 .challenge-image-container {
     position: relative;
     flex-shrink: 0;
@@ -987,6 +987,12 @@ textarea#userInput.transcribing:focus {
     flex-shrink: 0;
     position: relative;
     white-space: nowrap;
+}
+
+.icon-btn:hover {
+    color: #ad6800;
+    border-color: #ffc069;
+    background: #fff1b8;
 }
 
 .icon-btn .mic-icon {

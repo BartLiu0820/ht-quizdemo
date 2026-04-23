@@ -148,8 +148,9 @@ def build_wav_from_pcm(pcm_bytes, sample_width, channels, sample_rate):
 
 
 def convert_audio_to_wav(audio_bytes, input_format=None):
+    ffmpeg_path = '/usr/bin/ffmpeg'
     command = [
-        'ffmpeg',
+        ffmpeg_path,
         '-v', 'error'
     ]
 
