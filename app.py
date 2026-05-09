@@ -81,9 +81,9 @@ def append_player_log(user_message, teacher_feedback, status='success', error_me
     except Exception as e:
         print(f"写入 player.log 失败: {e}")
 
-# 获取配置信息
-API_KEY = os.environ.get("API_KEY")
-BASE_URL = os.environ.get("BASE_URL")
+# 获取配置信息（对话使用 DeepSeek，ASR/TTS 使用 Qwen）
+API_KEY = os.environ.get("API_KEY2") or os.environ.get("API_KEY")
+BASE_URL = os.environ.get("BASE_URL2") or os.environ.get("BASE_URL")
 if BASE_URL and not BASE_URL.endswith('/'):
     BASE_URL += '/'
 # 构建 chat completions 端点
@@ -105,11 +105,11 @@ ASR_MIME_TYPE_TO_FORMAT = {
 }
 
 # 默认模型名称，如果环境变量中未提供，则使用预设值
-MODEL_NAME = os.environ.get("MODEL_NAME", "qwen-max")
+MODEL_NAME = os.environ.get("MODEL_NAME2") or os.environ.get("MODEL_NAME", "qwen-max")
 
 
 def get_dashscope_api_key():
-    return os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("API_KEY")
+    return os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("API_KEY1") or os.environ.get("API_KEY")
 
 
 def detect_asr_format(content_type, filename):
@@ -354,7 +354,6 @@ def transcribe_audio(audio_bytes, audio_format, sample_rate=16000):
         for index in range(0, len(audio_bytes), chunk_size):
             recognition.send_audio_frame(audio_bytes[index:index + chunk_size])
         recognition.stop()
-        time.sleep(1.2)
     except Exception:
         try:
             recognition.stop()
@@ -582,7 +581,7 @@ def chat():
     try:
         # 准备请求头和负载
         headers = {
-            "Authorization": f"Bearer {get_dashscope_api_key() or API_KEY}",
+            "Authorization": f"Bearer {API_KEY}",
             "Content-Type": "application/json",
             "Connection": "close" # 尝试关闭长连接 (Keep-Alive)，减少 10054 错误
         }

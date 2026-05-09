@@ -16,7 +16,9 @@
       "Bash(gh repo *)",
       "WebFetch(domain:47.116.108.184)",
       "WebFetch(domain:stitch.withanthopic.com)",
-      "WebFetch(domain:stitch.withanthropic.com)"
+      "WebFetch(domain:stitch.withanthropic.com)",
+      "Bash(xargs wc *)",
+      "Bash(pip show *)"
     ]
   }
 }

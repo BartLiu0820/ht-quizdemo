@@ -487,7 +487,7 @@
                 window.isSecureContext
                 && navigator.mediaDevices
                 && navigator.mediaDevices.getUserMedia
-                && window.MediaRecorder
+                && (window.AudioContext || window.webkitAudioContext)
             );
         }
 
@@ -544,6 +544,10 @@
         let hasStreamingTranscript = false;
         let preferStreamingPreview = false;
         let recordedAudioChunks = [];
+        let pcmAudioContext = null;
+        let pcmProcessor = null;
+        let asrStreamCompleteResolve = null;
+        let asrStreamCompletePromise = null;
         let audioCueContext = null;
 
         function triggerTrackedPlaybackInterruption(playbackMeta) {
@@ -716,8 +720,9 @@
             finalizedTranscript = '';
             interimTranscript = '';
             hasStreamingTranscript = false;
-            preferStreamingPreview = false;
+            preferStreamingPreview = true;
             recordedAudioChunks = [];
+            asrStreamCompletePromise = new Promise(resolve => { asrStreamCompleteResolve = resolve; });
         }
 
         function cleanupStreamingConnection() {
@@ -809,7 +814,7 @@
             }
         }
 
-        async function openAsrStream() {
+        async function openAsrStream(sampleRate = 16000) {
             cleanupStreamingConnection();
             resetStreamingTranscriptState();
 
@@ -824,8 +829,8 @@
                     socket.send(JSON.stringify({
                         type: 'start',
                         sessionId: asrSessionId,
-                        format: getStreamingFormat(audioMimeType),
-                        sampleRate: 16000
+                        format: 'pcm',
+                        sampleRate: sampleRate
                     }));
                 };
 
@@ -839,19 +844,13 @@
                     }
 
                     if (data.type === 'interim') {
-                        if (!preferStreamingPreview) {
-                            return;
-                        }
-                        interimTranscript = data.display_text || data.text || '';
+                        interimTranscript = data.text || '';
                         hasStreamingTranscript = true;
                         applyStreamingTranscript();
                         return;
                     }
 
                     if (data.type === 'final') {
-                        if (!preferStreamingPreview) {
-                            return;
-                        }
                         finalizedTranscript = data.full_text || `${finalizedTranscript}${data.text || ''}`;
                         interimTranscript = '';
                         hasStreamingTranscript = true;
@@ -860,19 +859,30 @@
                     }
 
                     if (data.type === 'complete') {
-                        if (preferStreamingPreview) {
-                            finalizedTranscript = data.text || finalizedTranscript;
-                            finalizeStreamingTranscript();
+                        finalizedTranscript = data.text || finalizedTranscript;
+                        if (asrStreamCompleteResolve) {
+                            asrStreamCompleteResolve();
+                            asrStreamCompleteResolve = null;
                         }
                         return;
                     }
 
                     if (data.type === 'error') {
-                        reject(new Error(data.error || '语音识别失败'));
+                        if (asrStreamCompleteResolve) {
+                            asrStreamCompleteResolve();
+                            asrStreamCompleteResolve = null;
+                        }
+                        if (!started) {
+                            reject(new Error(data.error || '语音识别失败'));
+                        }
                     }
                 };
 
                 socket.onerror = function() {
+                    if (asrStreamCompleteResolve) {
+                        asrStreamCompleteResolve();
+                        asrStreamCompleteResolve = null;
+                    }
                     if (!started) {
                         reject(new Error('无法建立语音识别连接'));
                     }
@@ -881,6 +891,10 @@
                 socket.onclose = function() {
                     if (asrSocket === socket) {
                         asrSocket = null;
+                    }
+                    if (asrStreamCompleteResolve) {
+                        asrStreamCompleteResolve();
+                        asrStreamCompleteResolve = null;
                     }
                 };
             });
@@ -891,7 +905,9 @@
                 throw new Error(getVoiceInputFallbackReason());
             }
 
-            audioMimeType = getSupportedAudioMimeType();
+            if (pcmProcessor) { try { pcmProcessor.disconnect(); } catch (e) {} pcmProcessor = null; }
+            if (pcmAudioContext) { try { pcmAudioContext.close(); } catch (e) {} pcmAudioContext = null; }
+
             mediaStream = await navigator.mediaDevices.getUserMedia({
                 audio: {
                     channelCount: 1,
@@ -900,35 +916,46 @@
                     autoGainControl: false
                 }
             });
-            await openAsrStream();
 
-            const recorderOptions = audioMimeType ? {
-                mimeType: audioMimeType,
-                audioBitsPerSecond: 128000
-            } : undefined;
-            mediaRecorder = new MediaRecorder(mediaStream, recorderOptions);
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            pcmAudioContext = new AudioContextClass({ sampleRate: 16000 });
+            const nativeSampleRate = pcmAudioContext.sampleRate;
+            await openAsrStream(16000);
 
-            mediaRecorder.ondataavailable = async function(event) {
-                if (!event.data || event.data.size === 0) {
-                    return;
-                }
+            const source = pcmAudioContext.createMediaStreamSource(mediaStream);
+            pcmProcessor = pcmAudioContext.createScriptProcessor(2048, 1, 1);
+            const silentGain = pcmAudioContext.createGain();
+            silentGain.gain.value = 0;
 
-                recordedAudioChunks.push(event.data);
-
+            pcmProcessor.onaudioprocess = function(e) {
                 if (!asrSocket || asrSocket.readyState !== WebSocket.OPEN) {
                     return;
                 }
-
-                const chunkBuffer = await event.data.arrayBuffer();
-                asrSocket.send(chunkBuffer);
+                let float32 = e.inputBuffer.getChannelData(0);
+                if (nativeSampleRate !== 16000) {
+                    const ratio = nativeSampleRate / 16000;
+                    const newLen = Math.round(float32.length / ratio);
+                    const resampled = new Float32Array(newLen);
+                    for (let i = 0; i < newLen; i++) {
+                        const pos = i * ratio;
+                        const idx = Math.floor(pos);
+                        const frac = pos - idx;
+                        resampled[i] = float32[Math.min(idx, float32.length - 1)] * (1 - frac)
+                                     + float32[Math.min(idx + 1, float32.length - 1)] * frac;
+                    }
+                    float32 = resampled;
+                }
+                const int16 = new Int16Array(float32.length);
+                for (let i = 0; i < float32.length; i++) {
+                    const s = Math.max(-1, Math.min(1, float32[i]));
+                    int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                }
+                asrSocket.send(int16.buffer);
             };
 
-            mediaRecorder.onerror = function(event) {
-                console.error('录音失败:', event.error || event);
-                appendMessage('error', '录音失败');
-                stopRecording();
-                cleanupStreamingConnection();
-            };
+            source.connect(pcmProcessor);
+            pcmProcessor.connect(silentGain);
+            silentGain.connect(pcmAudioContext.destination);
 
             isRecording = true;
             micBtn.classList.add('recording');
@@ -937,48 +964,40 @@
             userInput.placeholder = '正在录音，请说出你的答案，再次点击结束...';
             stopActiveSpeechPlayback();
             playRecordingStartCue();
-            await new Promise(resolve => setTimeout(resolve, 180));
-            mediaRecorder.start(1000);
         }
 
         async function finishRecordingAndTranscribe() {
-            if (!mediaRecorder) {
+            if (!pcmProcessor) {
                 return;
             }
 
-            const recorder = mediaRecorder;
+            const processor = pcmProcessor;
+            const audioCtx = pcmAudioContext;
             const stream = mediaStream;
             const socket = asrSocket;
-            mediaRecorder = null;
+            const completionPromise = asrStreamCompletePromise;
+            pcmProcessor = null;
+            pcmAudioContext = null;
             mediaStream = null;
             setTranscribingState(true);
 
             try {
-                await new Promise((resolve, reject) => {
-                    recorder.addEventListener('stop', resolve, { once: true });
-                    recorder.addEventListener('error', function handleError(event) {
-                        reject(event.error || new Error('录音失败'));
-                    }, { once: true });
-                    recorder.requestData();
-                    recorder.stop();
-                });
-
-                const audioBlob = recordedAudioChunks.length > 0
-                    ? new Blob(recordedAudioChunks, { type: audioMimeType || 'audio/webm' })
-                    : null;
-
-                if (socket && socket.readyState === WebSocket.OPEN) {
-                    socket.send(JSON.stringify({ type: 'stop', sessionId: asrSessionId }));
-                }
+                processor.disconnect();
+                try { audioCtx.close(); } catch (e) {}
 
                 if (stream) {
                     stream.getTracks().forEach(track => track.stop());
                 }
 
-                if (audioBlob) {
-                    const fallbackText = await uploadAudioForTranscription(audioBlob, null, audioMimeType || audioBlob.type);
-                    finalizedTranscript = fallbackText || finalizedTranscript;
-                    hasStreamingTranscript = Boolean(finalizedTranscript);
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({ type: 'stop', sessionId: asrSessionId }));
+                }
+
+                if (completionPromise) {
+                    await Promise.race([
+                        completionPromise,
+                        new Promise(r => setTimeout(r, 8000))
+                    ]);
                 }
 
                 finalizeStreamingTranscript();
