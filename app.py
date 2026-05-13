@@ -23,6 +23,14 @@ load_dotenv()
 app = Flask(__name__)
 sock = Sock(app)
 
+# 并发控制：6人并发场景下的线程安全和 API 限流
+_log_lock = threading.Lock()        # player.log 写入锁
+_settings_lock = threading.Lock()   # settings.json 读写锁
+_asr_semaphore = threading.Semaphore(6)   # ASR 并发上限（WebSocket + HTTP 共享）
+_tts_semaphore = threading.Semaphore(4)   # TTS 并发上限（留余量避免限流）
+_chat_semaphore = threading.Semaphore(4)  # AI 对话并发上限
+SEMAPHORE_TIMEOUT = 30  # 秒，超时后返回"服务繁忙"
+
 # 设置文件路径
 SETTINGS_FILE = os.path.join(os.path.dirname(__file__), 'settings.json')
 PLAYER_LOG_FILE = os.path.join(os.path.dirname(__file__), 'player.log')
@@ -34,26 +42,27 @@ def load_settings():
         'initial_message': '',
         'challenge_image': ''
     }
-    if os.path.exists(SETTINGS_FILE):
-        try:
-            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-                settings = json.load(f)
-                # 合并默认值，确保所有字段都存在
-                return {**default_settings, **settings}
-        except Exception as e:
-            print(f"加载设置失败: {e}")
-            return default_settings
+    with _settings_lock:
+        if os.path.exists(SETTINGS_FILE):
+            try:
+                with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                    settings = json.load(f)
+                    return {**default_settings, **settings}
+            except Exception as e:
+                print(f"加载设置失败: {e}")
+                return default_settings
     return default_settings
 
 def save_settings(settings):
     """保存设置到文件"""
-    try:
-        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(settings, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception as e:
-        print(f"保存设置失败: {e}")
-        return False
+    with _settings_lock:
+        try:
+            with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(settings, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            print(f"保存设置失败: {e}")
+            return False
 
 
 def get_client_ip():
@@ -75,11 +84,12 @@ def append_player_log(user_message, teacher_feedback, status='success', error_me
     if error_message:
         record['error_message'] = error_message
 
-    try:
-        with open(PLAYER_LOG_FILE, 'a', encoding='utf-8') as log_file:
-            log_file.write(json.dumps(record, ensure_ascii=False) + '\n')
-    except Exception as e:
-        print(f"写入 player.log 失败: {e}")
+    with _log_lock:
+        try:
+            with open(PLAYER_LOG_FILE, 'a', encoding='utf-8') as log_file:
+                log_file.write(json.dumps(record, ensure_ascii=False) + '\n')
+        except Exception as e:
+            print(f"写入 player.log 失败: {e}")
 
 # 获取配置信息（对话使用 DeepSeek，ASR/TTS 使用 Qwen）
 API_KEY = os.environ.get("API_KEY2") or os.environ.get("API_KEY")
@@ -110,6 +120,11 @@ MODEL_NAME = os.environ.get("MODEL_NAME2") or os.environ.get("MODEL_NAME", "qwen
 
 def get_dashscope_api_key():
     return os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("API_KEY1") or os.environ.get("API_KEY")
+
+# 启动时初始化一次 dashscope.api_key，避免并发请求重复写全局变量
+_dashscope_api_key = get_dashscope_api_key()
+if _dashscope_api_key:
+    dashscope.api_key = _dashscope_api_key
 
 
 def detect_asr_format(content_type, filename):
@@ -299,8 +314,9 @@ class StreamingASRSession:
             model='paraformer-realtime-v2',
             format=audio_format,
             sample_rate=sample_rate,
-            language_hints=['zh'],
+            language_hints=['zh', 'en'],
             semantic_punctuation_enabled=False,
+            disfluency_removal_enabled=True,
             callback=self.callback
         )
         self.started = False
@@ -343,8 +359,9 @@ def transcribe_audio(audio_bytes, audio_format, sample_rate=16000):
         model='paraformer-realtime-v2',
         format=audio_format,
         sample_rate=sample_rate,
-        language_hints=['zh'],
+        language_hints=['zh', 'en'],
         semantic_punctuation_enabled=False,
+        disfluency_removal_enabled=True,
         callback=callback
     )
 
@@ -374,20 +391,21 @@ def stream_asr_events(session):
         if event.get('type') in {'complete', 'error'}:
             break
 
-# ====== 创建具有重试机制和不使用代理的 Session ======
-session = requests.Session()
-session.trust_env = False  # 忽略系统环境变量中的 HTTP_PROXY 和 HTTPS_PROXY
+# ====== 创建具有重试机制和不使用代理的 HTTP Session ======
+# 命名为 http_session 避免与 asr_stream 内的局部变量 session 混淆
+http_session = requests.Session()
+http_session.trust_env = False  # 忽略系统环境变量中的 HTTP_PROXY 和 HTTPS_PROXY
 
-# 配置重试策略，应对偶发的 ConnectionResetError (10054)
+# 连接池扩容至 12，覆盖 6 人并发 TTS+Chat 场景；配置重试策略应对偶发 ConnectionResetError
 retry_strategy = Retry(
-    total=3,  # 总共重试 3 次
+    total=3,
     status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["HEAD", "GET", "OPTIONS", "POST"], # 允许 POST 重试
-    backoff_factor=1 # 重试退避时间: 1s, 2s, 4s...
+    allowed_methods=["HEAD", "GET", "OPTIONS", "POST"],
+    backoff_factor=1
 )
-adapter = HTTPAdapter(max_retries=retry_strategy)
-session.mount("https://", adapter)
-session.mount("http://", adapter)
+adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=12, pool_maxsize=12)
+http_session.mount("https://", adapter)
+http_session.mount("http://", adapter)
 
 @app.route('/')
 def index():
@@ -427,22 +445,25 @@ def tts():
     if not api_key:
         return jsonify({"error": "未配置 API Key"}), 500
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "model": "qwen3-tts-flash",
-        "input": {
-            "text": text,
-            "voice": "Ethan",
-            "language_type": "Chinese"
-        }
-    }
+    if not _tts_semaphore.acquire(timeout=SEMAPHORE_TIMEOUT):
+        return jsonify({"error": "TTS 服务繁忙，请稍后重试"}), 503
 
     try:
-        response = session.post(
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "model": "qwen3-tts-flash",
+            "input": {
+                "text": text,
+                "voice": "Ethan",
+                "language_type": "Chinese"
+            }
+        }
+
+        response = http_session.post(
             'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
             headers=headers,
             json=payload,
@@ -462,16 +483,20 @@ def tts():
     except Exception as e:
         print(f"TTS Error: {e}")
         return jsonify({"error": f"语音生成失败: {str(e)}"}), 500
+    finally:
+        _tts_semaphore.release()
 
 @sock.route('/ws/asr')
 def asr_stream(ws):
-    api_key = get_dashscope_api_key()
-    if not api_key:
+    if not _dashscope_api_key:
         ws.send(json.dumps({'type': 'error', 'error': '未配置 API Key'}, ensure_ascii=False))
         return
 
-    dashscope.api_key = api_key
-    session = None
+    if not _asr_semaphore.acquire(timeout=10):
+        ws.send(json.dumps({'type': 'error', 'error': 'ASR 服务繁忙，请稍后重试'}, ensure_ascii=False))
+        return
+
+    asr_session = None
     event_thread = None
 
     try:
@@ -481,10 +506,10 @@ def asr_stream(ws):
                 break
 
             if isinstance(message, bytes):
-                if not session:
+                if not asr_session:
                     ws.send(json.dumps({'type': 'error', 'error': '识别会话尚未开始'}, ensure_ascii=False))
                     continue
-                session.send_audio(message)
+                asr_session.send_audio(message)
                 continue
 
             try:
@@ -495,43 +520,45 @@ def asr_stream(ws):
 
             message_type = payload.get('type')
             if message_type == 'start':
-                if session:
+                if asr_session:
                     ws.send(json.dumps({'type': 'error', 'error': '识别会话已存在'}, ensure_ascii=False))
                     continue
 
-                session = StreamingASRSession(
+                asr_session = StreamingASRSession(
                     session_id=payload.get('sessionId') or str(uuid.uuid4()),
                     audio_format=payload.get('format') or 'opus',
                     sample_rate=int(payload.get('sampleRate') or 16000)
                 )
-                session.start()
+                asr_session.start()
 
-                def forward_events():
-                    for event in stream_asr_events(session):
+                # 通过闭包捕获当前 asr_session，避免并发时引用错位
+                def forward_events(s=asr_session):
+                    for event in stream_asr_events(s):
                         ws.send(json.dumps(event, ensure_ascii=False))
 
                 event_thread = threading.Thread(target=forward_events, daemon=True)
                 event_thread.start()
-                ws.send(json.dumps({'type': 'started', 'sessionId': session.session_id}, ensure_ascii=False))
+                ws.send(json.dumps({'type': 'started', 'sessionId': asr_session.session_id}, ensure_ascii=False))
             elif message_type == 'stop':
-                if session:
-                    session.stop()
+                if asr_session:
+                    asr_session.stop()
                 break
             else:
                 ws.send(json.dumps({'type': 'error', 'error': '未知控制消息'}, ensure_ascii=False))
     except Exception as e:
-        if session and not session.closed:
-            session.fail(str(e))
+        if asr_session and not asr_session.closed:
+            asr_session.fail(str(e))
         else:
             try:
                 ws.send(json.dumps({'type': 'error', 'error': f'语音识别失败: {str(e)}'}, ensure_ascii=False))
             except Exception:
                 pass
     finally:
-        if session and not session.closed:
-            session.stop()
+        if asr_session and not asr_session.closed:
+            asr_session.stop()
         if event_thread and event_thread.is_alive():
             event_thread.join(timeout=2)
+        _asr_semaphore.release()
 
 
 @app.route('/asr', methods=['POST'])
@@ -540,15 +567,15 @@ def asr():
     if not audio_file or not audio_file.filename:
         return jsonify({"error": "缺少音频文件"}), 400
 
-    api_key = get_dashscope_api_key()
-    if not api_key:
+    if not _dashscope_api_key:
         return jsonify({"error": "未配置 API Key"}), 500
 
     audio_bytes = audio_file.read()
     if not audio_bytes:
         return jsonify({"error": "音频内容为空"}), 400
 
-    dashscope.api_key = api_key
+    if not _asr_semaphore.acquire(timeout=SEMAPHORE_TIMEOUT):
+        return jsonify({"error": "ASR 服务繁忙，请稍后重试"}), 503
 
     try:
         normalized_audio_bytes, audio_format, sample_rate = normalize_audio_for_asr(
@@ -567,6 +594,8 @@ def asr():
     except Exception as e:
         print(f"ASR Error: {e}")
         return jsonify({"error": f"语音识别失败，请优先尝试 WAV、MP3、M4A 或 OGG。详情: {str(e)}"}), 500
+    finally:
+        _asr_semaphore.release()
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -578,12 +607,14 @@ def chat():
     if not user_message:
         return jsonify({"error": "请输入内容"}), 400
 
+    if not _chat_semaphore.acquire(timeout=SEMAPHORE_TIMEOUT):
+        return jsonify({"error": "AI 服务繁忙，请稍后重试"}), 503
+
     try:
-        # 准备请求头和负载
         headers = {
             "Authorization": f"Bearer {API_KEY}",
             "Content-Type": "application/json",
-            "Connection": "close" # 尝试关闭长连接 (Keep-Alive)，减少 10054 错误
+            "Connection": "close"
         }
 
         messages = []
@@ -597,13 +628,10 @@ def chat():
             "messages": messages
         }
 
-        # 调用兼容 API
-        response = session.post(CHAT_URL, headers=headers, json=payload, timeout=60)
-        response.raise_for_status() # 如果返回非 200 状态码会抛出异常
-        
+        response = http_session.post(CHAT_URL, headers=headers, json=payload, timeout=60)
+        response.raise_for_status()
+
         response_data = response.json()
-        
-        # 提取回复文本
         ai_response = response_data['choices'][0]['message']['content']
         append_player_log(user_message, ai_response)
         return jsonify({"response": ai_response})
@@ -614,7 +642,10 @@ def chat():
     except Exception as e:
         print(f"Error: {e}")
         return jsonify({"error": f"AI 服务调用失败: {str(e)}"}), 500
+    finally:
+        _chat_semaphore.release()
 
 if __name__ == '__main__':
-    # 允许在本地运行
-    app.run(debug=True, port=5000)
+    # threaded=True 让每个 HTTP/WebSocket 请求在独立线程中处理，支持 6 人并发
+    # 生产环境建议改用：gunicorn -w 1 --threads 16 -b 0.0.0.0:5000 app:app
+    app.run(debug=True, port=5000, threaded=True)

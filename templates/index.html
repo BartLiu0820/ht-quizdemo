@@ -912,8 +912,8 @@
                 audio: {
                     channelCount: 1,
                     noiseSuppression: true,
-                    echoCancellation: false,
-                    autoGainControl: false
+                    echoCancellation: true,   // 消除 TTS 播放时的回声串扰
+                    autoGainControl: true     // 自动增益，解决说话声忽大忽小的问题
                 }
             });
 
@@ -923,7 +923,7 @@
             await openAsrStream(16000);
 
             const source = pcmAudioContext.createMediaStreamSource(mediaStream);
-            pcmProcessor = pcmAudioContext.createScriptProcessor(2048, 1, 1);
+            pcmProcessor = pcmAudioContext.createScriptProcessor(4096, 1, 1);
             const silentGain = pcmAudioContext.createGain();
             silentGain.gain.value = 0;
 
@@ -987,6 +987,12 @@
 
                 if (stream) {
                     stream.getTracks().forEach(track => track.stop());
+                }
+
+                // 补发 600ms 静音帧（9600 个零值 Int16 @ 16kHz），
+                // 给 ASR 模型足够的尾部上下文来完成最后一句话的识别
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                    socket.send(new Int16Array(9600).buffer);
                 }
 
                 if (socket && socket.readyState === WebSocket.OPEN) {
