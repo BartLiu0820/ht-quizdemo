@@ -291,6 +291,48 @@
         let isTranscribingAudio = false;
         let isStoppingRecording = false;
         let submitButtonRestoreTitle = sendBtn.textContent;
+        let currentProgressBar = null;
+
+        class SimulatedProgress {
+            constructor(trackEl) {
+                this.bar = trackEl ? trackEl.querySelector('.progress-bar') : null;
+                this.progress = 0;
+                this.target = 95;
+                this.interval = null;
+            }
+
+            start() {
+                this.progress = 0;
+                if (this.bar) {
+                    this.bar.style.transition = 'none';
+                    this.bar.style.width = '0%';
+                    this.bar.style.opacity = '1';
+                }
+                this._tick();
+                this.interval = setInterval(() => this._tick(), 400);
+            }
+
+            _tick() {
+                if (!this.bar) return;
+                const remaining = this.target - this.progress;
+                const step = Math.max(0.1, remaining * 0.018);
+                this.progress = Math.min(this.target, this.progress + step);
+                this.bar.style.transition = 'width 0.4s ease-out';
+                this.bar.style.width = this.progress + '%';
+            }
+
+            complete() {
+                clearInterval(this.interval);
+                if (this.bar) {
+                    this.bar.style.transition = 'width 0.35s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+                    this.bar.style.width = '100%';
+                }
+            }
+
+            stop() {
+                clearInterval(this.interval);
+            }
+        }
 
         function updateSendButtonState() {
             const hasInput = userInput.value.trim().length > 0;
@@ -1561,6 +1603,16 @@
                     }
                 }
 
+                // 第一段语音生成后，进度条瞬间充满到 100%
+                if (currentProgressBar) {
+                    currentProgressBar.complete();
+                }
+
+                await new Promise(r => setTimeout(r, 350));
+                if (currentProgressBar) {
+                    currentProgressBar.stop();
+                    currentProgressBar = null;
+                }
                 removeMessage(loadingId);
 
                 if (pendingFeedbackText !== chatResponseText || !chatContainer.classList.contains('submitted')) {
@@ -1576,6 +1628,10 @@
                     // TTS 失败不影响文本显示，用户仍可看到老师反馈
                 }
             } catch (error) {
+                if (currentProgressBar) {
+                    currentProgressBar.stop();
+                    currentProgressBar = null;
+                }
                 removeMessage(loadingId);
                 pendingFeedbackText = '';
                 // 保留 submitted 状态以允许页面滚动，只重置其他完成状态
@@ -1609,6 +1665,10 @@
                 // 错误消息后自动滚动到底部，确保重试按钮可见
                 scrollToBottom();
             } finally {
+                if (currentProgressBar) {
+                    currentProgressBar.stop();
+                    currentProgressBar = null;
+                }
                 isPreparingFeedbackAudio = false;
             }
         }
@@ -1673,6 +1733,9 @@
                 <div class="message-title">🧠 老师正在准备解析</div>
                 <div class="message-content">
                     <div class="loading-text">老师正在生成解析，请稍等...</div>
+                    <div class="progress-track">
+                        <div class="progress-bar"></div>
+                    </div>
                     <div class="loading-dots" aria-hidden="true">
                         <span></span>
                         <span></span>
@@ -1686,6 +1749,12 @@
             `;
             chatHistory.appendChild(msgDiv);
             scrollToBottom();
+
+            const trackEl = msgDiv.querySelector('.progress-track');
+            if (trackEl) {
+                currentProgressBar = new SimulatedProgress(trackEl);
+                currentProgressBar.start();
+            }
         }
 
         function removeMessage(id) {
