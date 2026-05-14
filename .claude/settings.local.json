@@ -18,7 +18,16 @@
       "WebFetch(domain:stitch.withanthopic.com)",
       "WebFetch(domain:stitch.withanthropic.com)",
       "Bash(xargs wc *)",
-      "Bash(pip show *)"
+      "Bash(pip show *)",
+      "Bash(pip list *)",
+      "Bash(cat deploy.sh)",
+      "Bash(ls *.sh *.bat)",
+      "Bash(netstat -ano)",
+      "Bash(taskkill /PID 29292 /F)",
+      "Bash(taskkill /PID 15856 /F)",
+      "Bash(cmd *)",
+      "Bash(PYTHONUNBUFFERED=1 FLASK_DEBUG=0 python app.py)",
+      "Bash(tasklist)"
     ]
   }
 }

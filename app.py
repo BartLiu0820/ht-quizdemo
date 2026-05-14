@@ -1,5 +1,6 @@
 import os
 import io
+import re
 import json
 import time
 import wave
@@ -432,6 +433,73 @@ def update_settings():
     else:
         return jsonify({"error": "保存失败"}), 500
 
+# C++ 术语 TTS 发音映射表（按长度降序排列，避免短串优先匹配）
+_CPP_TTS_MAP = [
+    # 预处理指令（放最前，含 # 号）
+    (r'#include\b',              'include 指令'),
+    (r'#define\b',               'define 指令'),
+    (r'#ifndef\b',               'if n def 指令'),
+    (r'#ifdef\b',                'if def 指令'),
+    (r'#endif\b',                'end if 指令'),
+    (r'#pragma\b',               'pragma 指令'),
+    (r'#undef\b',                'undef 指令'),
+    # 类型转换（长串优先）
+    (r'\breinterpret_cast\b',    'reinterpret cast'),
+    (r'\bdynamic_cast\b',        'dynamic cast'),
+    (r'\bstatic_cast\b',         'static cast'),
+    (r'\bconst_cast\b',          'const cast'),
+    # 静态断言
+    (r'\bstatic_assert\b',       'static assert'),
+    # 智能指针
+    (r'\bunordered_multimap\b',  'unordered multimap'),
+    (r'\bunordered_multiset\b',  'unordered multiset'),
+    (r'\bunordered_map\b',       'unordered map'),
+    (r'\bunordered_set\b',       'unordered set'),
+    (r'\bmake_shared\b',         'make shared'),
+    (r'\bmake_unique\b',         'make unique'),
+    (r'\bshared_ptr\b',          'shared ptr'),
+    (r'\bunique_ptr\b',          'unique ptr'),
+    (r'\bweak_ptr\b',            'weak ptr'),
+    # STL 容器方法
+    (r'\bemplace_back\b',        'emplace back'),
+    (r'\bemplace_front\b',       'emplace front'),
+    (r'\bpush_back\b',           'push back'),
+    (r'\bpop_back\b',            'pop back'),
+    (r'\bpush_front\b',          'push front'),
+    (r'\bpop_front\b',           'pop front'),
+    (r'\bbegin\b',               'begin'),   # 保留原词，TTS 可正确朗读
+    # 现代 C++ 关键字
+    (r'\bconstexpr\b',           'const expr'),
+    (r'\bconsteval\b',           'const eval'),
+    (r'\bconstinit\b',           'const init'),
+    (r'\bdecltype\b',            'decl type'),
+    (r'\bnoexcept\b',            'no except'),
+    (r'\bnullptr\b',             'null ptr'),
+    (r'\btypename\b',            'type name'),
+    (r'\btypedef\b',             'type def'),
+    (r'\btypeid\b',              'type id'),
+    (r'\bsizeof\b',              'size of'),
+    (r'\balignas\b',             'align as'),
+    (r'\balignof\b',             'align of'),
+    (r'\bco_await\b',            'co await'),
+    (r'\bco_yield\b',            'co yield'),
+    (r'\bco_return\b',           'co return'),
+    # I/O 流
+    (r'\bcout\b',                'c out'),
+    (r'\bcin\b',                 'c in'),
+    (r'\bcerr\b',                'c err'),
+    (r'\bclog\b',                'c log'),
+    (r'\bendl\b',                'end l'),
+    # std 命名空间前缀（放较后，避免误替换 std 内的其他已处理词）
+    (r'\bstd::',                 'std '),
+]
+
+def _preprocess_tts_text(text: str) -> str:
+    for pattern, replacement in _CPP_TTS_MAP:
+        text = re.sub(pattern, replacement, text, flags=re.ASCII)
+    return text
+
+
 @app.route('/tts', methods=['POST'])
 def tts():
     """调用 Qwen TTS 接口，将文本转为语音音频 URL"""
@@ -440,6 +508,8 @@ def tts():
 
     if not text:
         return jsonify({"error": "缺少文本"}), 400
+
+    text = _preprocess_tts_text(text)
 
     api_key = get_dashscope_api_key()
     if not api_key:
@@ -455,11 +525,13 @@ def tts():
         }
 
         payload = {
-            "model": "qwen3-tts-flash",
+            "model": "qwen3-tts-instruct-flash",
             "input": {
                 "text": text,
                 "voice": "Ethan",
-                "language_type": "Chinese"
+                "language_type": "Chinese",
+                "instructions": "这是编程教学内容，其中英文编程术语（如 c out、c in、null ptr、static cast 等）请用清晰的英文字母发音朗读，其余中文内容保持自然语调。",
+                "optimize_instructions": True
             }
         }
 
@@ -648,4 +720,4 @@ def chat():
 if __name__ == '__main__':
     # threaded=True 让每个 HTTP/WebSocket 请求在独立线程中处理，支持 6 人并发
     # 生产环境建议改用：gunicorn -w 1 --threads 16 -b 0.0.0.0:5000 app:app
-    app.run(debug=True, port=5000, threaded=True)
+    app.run(debug=True, port=5000, threaded=True, use_reloader=False)
