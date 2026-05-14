@@ -554,7 +554,7 @@
             }
 
             currentChallengeText = initMsg || '🧠 编程思考挑战 · 第1关\n🎯 任务和题目：说说你对一个编程概念的理解，开始你的思考吧！';
-            challengeQuestion.innerHTML = currentChallengeText.replace(/\n/g, '<br>');
+            challengeQuestion.innerHTML = escapeHtml(currentChallengeText).replace(/\n/g, '<br>');
 
             // 清空历史记录并隐藏反馈区
             chatHistory.innerHTML = '';
@@ -1478,6 +1478,12 @@
             }
         }
 
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
         function appendMessage(sender, text) {
             const msgDiv = document.createElement('div');
             const titleDiv = document.createElement('div');
@@ -1486,16 +1492,18 @@
             const contentDiv = document.createElement('div');
             contentDiv.className = 'message-content';
 
+            const safeHtml = escapeHtml(text).replace(/\n/g, '<br>');
+
             if (sender === 'user') {
                 msgDiv.className = 'message user-message answer-card';
                 titleDiv.textContent = '✏️ 我的回答';
-                contentDiv.innerHTML = text.replace(/\n/g, '<br>');
+                contentDiv.innerHTML = safeHtml;
                 msgDiv.appendChild(titleDiv);
                 msgDiv.appendChild(contentDiv);
             } else if (sender === 'ai') {
                 msgDiv.className = 'message ai-message feedback-card';
                 titleDiv.textContent = '🎉 老师反馈';
-                contentDiv.innerHTML = text.replace(/\n/g, '<br>');
+                contentDiv.innerHTML = safeHtml;
                 msgDiv.appendChild(titleDiv);
                 msgDiv.appendChild(contentDiv);
 
@@ -1511,7 +1519,7 @@
             } else if (sender === 'error') {
                 msgDiv.className = 'message error-message';
                 titleDiv.textContent = '💡 温馨提示';
-                contentDiv.innerHTML = text;
+                contentDiv.innerHTML = safeHtml;
                 msgDiv.appendChild(titleDiv);
                 msgDiv.appendChild(contentDiv);
             }
