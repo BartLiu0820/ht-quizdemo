@@ -745,6 +745,22 @@ body.modal-open {
     color: #d46b08;
 }
 
+.retry-btn {
+    margin-top: 10px;
+    padding: 6px 18px;
+    background: #fa8c16;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    display: block;
+}
+
+.retry-btn:hover {
+    background: #d46b08;
+}
+
 .loading {
     color: #5f6b7a;
     background: #f6ffed;

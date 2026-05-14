@@ -494,9 +494,48 @@ _CPP_TTS_MAP = [
     (r'\bstd::',                 'std '),
 ]
 
+_CN_DIGITS = '零一二三四五六七八九'
+
+def _int_to_chinese(n: int) -> str:
+    if n == 0:
+        return '零'
+    if n < 10:
+        return _CN_DIGITS[n]
+    if n < 100:
+        s = ('' if n // 10 == 1 else _CN_DIGITS[n // 10]) + '十'
+        if n % 10:
+            s += _CN_DIGITS[n % 10]
+        return s
+    if n < 10000:
+        hundreds, rest = divmod(n, 100)
+        s = _CN_DIGITS[hundreds] + '百'
+        if rest == 0:
+            return s
+        if rest < 10:
+            s += '零'
+        s += _int_to_chinese(rest)
+        return s
+    # 万位及以上直接逐位输出，避免复杂性
+    return ''.join(_CN_DIGITS[int(d)] for d in str(n))
+
+def _replace_number(m: re.Match) -> str:
+    token = m.group(0)
+    # 纯整数且不超过 9999，转成中文数字；其余（小数、大数）保持原样
+    try:
+        n = int(token)
+        if 0 <= n <= 9999:
+            return _int_to_chinese(n)
+    except ValueError:
+        pass
+    return token
+
 def _preprocess_tts_text(text: str) -> str:
     for pattern, replacement in _CPP_TTS_MAP:
         text = re.sub(pattern, replacement, text, flags=re.ASCII)
+    # 将独立的阿拉伯数字替换为中文数字，辅助 TTS 正确判断多音字语境
+    # 用 ASCII 模式使 \w 只匹配 [a-zA-Z0-9_]，令汉字不构成词边界
+    # 同时排除小数点前后，避免把 "3.14" 拆成 "三.十四"
+    text = re.sub(r'(?<![.\w])\d+(?![.\w])', _replace_number, text, flags=re.ASCII)
     return text
 
 
@@ -504,12 +543,23 @@ def _preprocess_tts_text(text: str) -> str:
 def tts():
     """调用 Qwen TTS 接口，将文本转为语音音频 URL"""
     data = request.json
-    text = data.get('text')
+    original_text = data.get('text')
 
-    if not text:
+    if not original_text:
         return jsonify({"error": "缺少文本"}), 400
 
-    text = _preprocess_tts_text(text)
+    text = _preprocess_tts_text(original_text)
+    print(f"[TTS] 收到请求，原文长度={len(original_text)}")
+    print(f"[TTS] 原文: {original_text!r}")
+    print(f"[TTS] 预处理: {text!r}")
+
+    tts_log = {
+        'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+        'client_ip': get_client_ip(),
+        'type': 'tts',
+        'original': original_text,
+        'preprocessed': text,
+    }
 
     api_key = get_dashscope_api_key()
     if not api_key:
@@ -541,19 +591,44 @@ def tts():
             json=payload,
             timeout=30
         )
+        if not response.ok:
+            print(f"[TTS] HTTP {response.status_code}: {response.text}")
         response.raise_for_status()
 
         response_data = response.json()
         audio_url = response_data.get('output', {}).get('audio', {}).get('url')
 
         if audio_url:
+            tts_log['status'] = 'success'
+            with _log_lock:
+                try:
+                    with open(PLAYER_LOG_FILE, 'a', encoding='utf-8') as f:
+                        f.write(json.dumps(tts_log, ensure_ascii=False) + '\n')
+                except Exception as log_err:
+                    print(f"[TTS] 写日志失败: {log_err}")
             return jsonify({"audio_url": audio_url})
         else:
             print("TTS Unexpected Response:", response_data)
+            tts_log['status'] = 'error'
+            tts_log['error'] = str(response_data)
+            with _log_lock:
+                try:
+                    with open(PLAYER_LOG_FILE, 'a', encoding='utf-8') as f:
+                        f.write(json.dumps(tts_log, ensure_ascii=False) + '\n')
+                except Exception as log_err:
+                    print(f"[TTS] 写日志失败: {log_err}")
             return jsonify({"error": "接口未返回音频 URL"}), 500
 
     except Exception as e:
         print(f"TTS Error: {e}")
+        tts_log['status'] = 'error'
+        tts_log['error'] = str(e)
+        with _log_lock:
+            try:
+                with open(PLAYER_LOG_FILE, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps(tts_log, ensure_ascii=False) + '\n')
+            except Exception:
+                pass
         return jsonify({"error": f"语音生成失败: {str(e)}"}), 500
     finally:
         _tts_semaphore.release()

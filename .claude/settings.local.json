@@ -27,7 +27,13 @@
       "Bash(taskkill /PID 15856 /F)",
       "Bash(cmd *)",
       "Bash(PYTHONUNBUFFERED=1 FLASK_DEBUG=0 python app.py)",
-      "Bash(tasklist)"
+      "Bash(tasklist)",
+      "Bash(echo \"PID: $!\")",
+      "Bash(findstr \"LISTENING\")",
+      "Bash(findstr -E \"5000|8000|8080|3000\")",
+      "Bash(taskkill /PID 15136 /F)",
+      "Bash(taskkill /PID 21884 /F)",
+      "Bash(powershell *)"
     ]
   }
 }

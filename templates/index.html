@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>编程问答大挑战 [v-tts-log]</title>
+    <title>编程问答大挑战</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ range(1, 10000) | random }}">
 </head>
 <body>
@@ -1064,8 +1064,11 @@
             const previousPlaybackMeta = speechPlaybackMeta;
             const previousBtn = activeSpeakerBtn;
 
-            if (btnElement && activeSpeakerBtn === btnElement && currentAudio && !currentAudio.paused) {
-                stopActiveSpeechPlayback();
+            if (btnElement && activeSpeakerBtn === btnElement) {
+                if (currentAudio && !currentAudio.paused) {
+                    stopActiveSpeechPlayback();
+                }
+                // loading 阶段或已在播放时，忽略重复点击
                 return true;
             }
 
@@ -1219,7 +1222,25 @@
             } catch (error) {
                 removeMessage(loadingId);
                 pendingFeedbackText = '';
-                appendMessage('error', error.message || '网络请求失败，请检查后端服务是否运行。');
+                // 恢复 UI 状态，让用户可以重试
+                chatInputArea.classList.remove('hidden');
+                resetChallengeCompletionState();
+                userInput.value = message;
+                userInput.disabled = false;
+                sendBtn.disabled = false;
+                micBtn.disabled = false;
+                updateSendButtonState();
+                // 显示错误 + 重试按钮
+                const errMsg = error.message || '网络请求失败，请检查后端服务是否运行。';
+                const errorDiv = appendMessage('error', errMsg);
+                const retryBtn = document.createElement('button');
+                retryBtn.className = 'retry-btn';
+                retryBtn.textContent = '重新发送';
+                retryBtn.onclick = () => {
+                    errorDiv.remove();
+                    sendMessage();
+                };
+                errorDiv.querySelector('.message-content').appendChild(retryBtn);
             } finally {
                 isPreparingFeedbackAudio = false;
             }
