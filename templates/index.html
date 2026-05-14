@@ -504,6 +504,138 @@
             });
         }
 
+        async function playSegmentSequence(segments, btnElement, options) {
+            if (!segments || segments.length === 0) return;
+
+            const urlCache = new Array(segments.length);
+            const fetchPromises = new Array(segments.length);
+
+            async function ensureFetched(index) {
+                if (index >= segments.length) return null;
+                if (urlCache[index]) return urlCache[index];
+                if (fetchPromises[index]) {
+                    await fetchPromises[index];
+                    return urlCache[index];
+                }
+                fetchPromises[index] = prefetchTtsAudio(segments[index]).then(url => {
+                    urlCache[index] = url;
+                }).catch(e => {
+                    console.warn(`段落 ${index} TTS 预加载失败:`, e);
+                });
+                await fetchPromises[index];
+                return urlCache[index];
+            }
+
+            if (btnElement) {
+                activeSpeakerBtn = btnElement;
+                btnElement.innerHTML = '◌';
+                btnElement.title = '正在生成语音...';
+                btnElement.setAttribute('aria-label', '正在生成语音');
+                btnElement.classList.add('loading');
+                btnElement.classList.remove('playing');
+            }
+
+            try {
+                let currentUrl = options.firstUrl || await ensureFetched(0);
+                if (!currentUrl) throw new Error('第一段语音生成失败');
+
+                for (let i = 0; i < segments.length; i++) {
+                    const isLast = i === segments.length - 1;
+
+                    if (!isLast) {
+                        ensureFetched(i + 1);
+                    }
+
+                    const audio = new Audio(currentUrl);
+                    currentAudio = audio;
+                    speechPlaybackMeta = options;
+
+                    if (btnElement && activeSpeakerBtn === btnElement) {
+                        btnElement.innerHTML = '⏹️';
+                        btnElement.title = '停止朗读';
+                        btnElement.setAttribute('aria-label', '停止朗读');
+                        btnElement.classList.remove('loading');
+                        btnElement.classList.add('playing');
+                    }
+
+                    await audio.play();
+
+                    while (!audio.ended) {
+                        await new Promise(r => setTimeout(r, 50));
+                        if (activeSpeakerBtn !== btnElement) {
+                            throw new Error('interrupted');
+                        }
+                    }
+
+                    currentAudio = null;
+
+                    if (!isLast) {
+                        currentUrl = await ensureFetched(i + 1);
+                        if (!currentUrl) throw new Error(`段落 ${i + 1} 语音生成失败`);
+                    }
+                }
+
+                resetSpeakerButton(btnElement);
+                if (activeSpeakerBtn === btnElement) activeSpeakerBtn = null;
+                if (typeof options.onEnded === 'function') {
+                    options.onEnded();
+                }
+            } catch (e) {
+                if (currentAudio) {
+                    currentAudio.pause();
+                    currentAudio = null;
+                }
+                resetSpeakerButton(btnElement);
+                if (activeSpeakerBtn === btnElement) activeSpeakerBtn = null;
+                if (e.message === 'interrupted') {
+                    if (typeof options.onInterrupted === 'function') {
+                        options.onInterrupted();
+                    }
+                } else {
+                    throw e;
+                }
+            }
+        }
+
+        async function startSegmentedFeedbackPlayback(fullText, btnElement = null, preparedFirstUrl = null) {
+            if (btnElement && activeSpeakerBtn === btnElement) {
+                if (currentAudio && !currentAudio.paused) {
+                    stopActiveSpeechPlayback();
+                }
+                return true;
+            }
+
+            stopActiveSpeechPlayback();
+
+            const segments = fullText.split(/\n+/).filter(s => s.trim());
+            if (segments.length <= 1) {
+                return await startFeedbackPlayback(fullText, btnElement, preparedFirstUrl);
+            }
+
+            feedbackPlaybackToken += 1;
+            const playbackToken = feedbackPlaybackToken;
+            isFeedbackPlaybackActive = true;
+
+            try {
+                await playSegmentSequence(segments, btnElement, {
+                    trackCompletion: true,
+                    playbackToken,
+                    firstUrl: preparedFirstUrl,
+                    onEnded: () => {
+                        isFeedbackPlaybackActive = false;
+                        scheduleChallengeCompletion(playbackToken);
+                    },
+                    onInterrupted: () => {
+                        isFeedbackPlaybackActive = false;
+                        handleTrackedPlaybackInterrupted(playbackToken);
+                    }
+                });
+            } catch (e) {
+                isFeedbackPlaybackActive = false;
+                throw e;
+            }
+        }
+
         // 页面加载时从服务器加载设置
         async function loadSettings() {
             try {
@@ -1418,12 +1550,15 @@
                     if (loadingText) loadingText.textContent = '正在准备语音，请稍等...';
                 }
 
-                // 等 TTS 音频就绪后再展示文本，保证文本与播放同步
-                let preparedAudioUrl = null;
-                try {
-                    preparedAudioUrl = await prefetchTtsAudio(chatResponseText);
-                } catch (e) {
-                    console.warn('TTS 预加载失败:', e);
+                // 先预加载第一段语音，就绪后再展示文本并播放
+                const segments = chatResponseText.split(/\n+/).filter(s => s.trim());
+                let preparedFirstUrl = null;
+                if (segments.length > 1) {
+                    try {
+                        preparedFirstUrl = await prefetchTtsAudio(segments[0]);
+                    } catch (e) {
+                        console.warn('第一段 TTS 预加载失败:', e);
+                    }
                 }
 
                 removeMessage(loadingId);
@@ -1435,7 +1570,7 @@
                 const speakerBtn = renderFeedbackMessage(chatResponseText);
                 pendingFeedbackText = '';
                 try {
-                    await startFeedbackPlayback(chatResponseText, speakerBtn, preparedAudioUrl);
+                    await startSegmentedFeedbackPlayback(chatResponseText, speakerBtn, preparedFirstUrl);
                 } catch (ttsErr) {
                     console.warn('TTS 播放失败，已降级为仅显示文本:', ttsErr);
                     // TTS 失败不影响文本显示，用户仍可看到老师反馈
@@ -1513,7 +1648,7 @@
                 speakerBtn.title = '朗读这段反馈';
                 speakerBtn.onclick = function() {
                     playButtonClickCue();
-                    startFeedbackPlayback(text, speakerBtn, speakerBtn._wavUrl || null);
+                    startSegmentedFeedbackPlayback(text, speakerBtn);
                 };
                 msgDiv.appendChild(speakerBtn);
             } else if (sender === 'error') {
