@@ -216,7 +216,69 @@
 
         let systemPrompt = '';
         let currentChallengeText = '';
-        let currentAudio = null; // 用于存储当前播放的音频对象
+        const TTS_SAMPLE_RATE = 22050; // 与后端 TTS_PCM_SAMPLE_RATE 保持一致
+
+        // PCM 流式播放器：将 Int16 PCM 块实时送入 Web Audio API
+        class PCMStreamPlayer {
+            constructor(sampleRate = TTS_SAMPLE_RATE) {
+                this.sampleRate = sampleRate;
+                this.ctx = null;
+                this.nextTime = 0;
+                this.stopped = false;
+                this.chunks = [];
+            }
+            _init() {
+                if (!this.ctx) {
+                    this.ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: this.sampleRate });
+                    this.nextTime = this.ctx.currentTime;
+                }
+                if (this.ctx.state === 'suspended') this.ctx.resume();
+            }
+            feed(arrayBuffer) {
+                if (this.stopped) return;
+                this._init();
+                this.chunks.push(arrayBuffer);
+                const int16 = new Int16Array(arrayBuffer);
+                const f32 = new Float32Array(int16.length);
+                for (let i = 0; i < int16.length; i++) f32[i] = int16[i] / 32768;
+                const buf = this.ctx.createBuffer(1, f32.length, this.sampleRate);
+                buf.getChannelData(0).set(f32);
+                const src = this.ctx.createBufferSource();
+                src.buffer = buf;
+                src.connect(this.ctx.destination);
+                const t = Math.max(this.ctx.currentTime + 0.02, this.nextTime);
+                src.start(t);
+                this.nextTime = t + buf.duration;
+            }
+            remainingMs() {
+                if (!this.ctx) return 0;
+                return Math.max(0, (this.nextTime - this.ctx.currentTime) * 1000);
+            }
+            stop() {
+                this.stopped = true;
+                try { if (this.ctx) this.ctx.close(); } catch (e) {}
+                this.ctx = null;
+            }
+            toWavBlobUrl() {
+                const total = this.chunks.reduce((s, c) => s + c.byteLength, 0);
+                const wav = new ArrayBuffer(44 + total);
+                const v = new DataView(wav);
+                const w = (off, str) => { for (let i = 0; i < str.length; i++) v.setUint8(off + i, str.charCodeAt(i)); };
+                w(0, 'RIFF'); v.setUint32(4, 36 + total, true);
+                w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true);
+                v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+                v.setUint32(24, this.sampleRate, true); v.setUint32(28, this.sampleRate * 2, true);
+                v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+                w(36, 'data'); v.setUint32(40, total, true);
+                let off = 44;
+                for (const c of this.chunks) { new Uint8Array(wav, off, c.byteLength).set(new Uint8Array(c)); off += c.byteLength; }
+                return URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }));
+            }
+        }
+
+        let currentAudio = null; // 用于存储当前播放的音频对象（重播缓存 WAV 时使用）
+        let currentStreamPlayer = null;         // 当前流式 PCM 播放器
+        let currentTtsFetchController = null;   // 当前流式 TTS fetch AbortController
         let activeSpeakerBtn = null;
         let speechPlaybackMeta = null;
         let completionDelayTimer = null;
@@ -396,6 +458,32 @@
             return msgDiv.querySelector('.speaker-btn');
         }
 
+        async function prefetchTtsAudio(text) {
+            const response = await fetch('/tts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text }),
+            });
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.error || '语音生成失败');
+            }
+            const chunks = [];
+            const reader = response.body.getReader();
+            const contentType = response.headers.get('Content-Type') || 'audio/wav';
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    chunks.push(value);
+                }
+            } finally {
+                reader.releaseLock();
+            }
+            const blob = new Blob(chunks, { type: contentType });
+            return URL.createObjectURL(blob);
+        }
+
         async function startFeedbackPlayback(text, btnElement = null, preparedAudioUrl = null) {
             feedbackPlaybackToken += 1;
             const playbackToken = feedbackPlaybackToken;
@@ -569,6 +657,15 @@
             if (shouldScheduleCompletion) {
                 isManualFeedbackStopPending = true;
                 isFeedbackPlaybackActive = false;
+            }
+
+            if (currentTtsFetchController) {
+                currentTtsFetchController.abort();
+                currentTtsFetchController = null;
+            }
+            if (currentStreamPlayer) {
+                currentStreamPlayer.stop();
+                currentStreamPlayer = null;
             }
 
             if (currentAudio) {
@@ -1106,10 +1203,15 @@
             }
 
             try {
-                const audioUrl = options.audioUrl || await prepareTtsAudio(text);
-                const playbackAudio = new Audio(audioUrl);
+                if (!options.audioUrl) {
+                    await streamPcmPlayback(text, btnElement, options);
+                    return true;
+                }
+
+                const playbackAudio = new Audio(options.audioUrl);
                 currentAudio = playbackAudio;
                 speechPlaybackMeta = options;
+                if (btnElement) btnElement._wavUrl = options.audioUrl;
 
                 playbackAudio.onplay = () => {
                     if (btnElement && activeSpeakerBtn === btnElement) {
@@ -1170,6 +1272,103 @@
             }
         }
 
+        async function streamPcmPlayback(text, btnElement, options, attempt = 1) {
+            const controller = new AbortController();
+            currentTtsFetchController = controller;
+            speechPlaybackMeta = options;
+
+            const cleanup = (ended) => {
+                currentTtsFetchController = null;
+                currentStreamPlayer = null;
+                speechPlaybackMeta = null;
+                resetSpeakerButton(btnElement);
+                if (activeSpeakerBtn === btnElement) activeSpeakerBtn = null;
+                if (ended && typeof options.onEnded === 'function') options.onEnded();
+                else if (!ended && typeof options.onInterrupted === 'function') options.onInterrupted();
+            };
+
+            try {
+                const response = await fetch('/tts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text }),
+                    signal: controller.signal,
+                });
+
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.error || '语音生成失败');
+                }
+
+                // 将流式字节收集为 Blob，生成本地 URL 后用 Audio 播放
+                const chunks = [];
+                const reader = response.body.getReader();
+                const contentType = response.headers.get('Content-Type') || 'audio/wav';
+                try {
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        chunks.push(value);
+                        // 收到第一块时立即切换按钮到"加载中"（已由 speakText 设置过 loading）
+                    }
+                } finally {
+                    reader.releaseLock();
+                }
+
+                if (controller.signal.aborted) {
+                    cleanup(false);
+                    return;
+                }
+
+                const blob = new Blob(chunks, { type: contentType });
+                const audioUrl = URL.createObjectURL(blob);
+                if (btnElement) btnElement._wavUrl = audioUrl;
+
+                const playbackAudio = new Audio(audioUrl);
+                currentAudio = playbackAudio;
+
+                // 切换按钮到"播放中"
+                if (btnElement) {
+                    btnElement.innerHTML = '⏹️';
+                    btnElement.title = '停止朗读';
+                    btnElement.setAttribute('aria-label', '停止朗读');
+                    btnElement.classList.remove('loading');
+                    btnElement.classList.add('playing');
+                }
+
+                await new Promise((resolve, reject) => {
+                    playbackAudio.onended = () => {
+                        currentAudio = null;
+                        cleanup(true);
+                        resolve();
+                    };
+                    playbackAudio.onerror = (e) => {
+                        currentAudio = null;
+                        cleanup(false);
+                        reject(new Error('音频播放失败'));
+                    };
+                    playbackAudio.play().catch(reject);
+                });
+
+            } catch (e) {
+                currentAudio = null;
+                if (e.name === 'AbortError') {
+                    cleanup(false);
+                    return;
+                }
+                // 偶发 API 故障时自动重试一次
+                if (attempt < 2) {
+                    console.warn(`TTS 请求失败，正在进行第 ${attempt + 1} 次重试...`, e);
+                    cleanup(false);
+                    // 短暂延迟后重试
+                    await new Promise(r => setTimeout(r, 500));
+                    return await streamPcmPlayback(text, btnElement, options, attempt + 1);
+                }
+                cleanup(false);
+                throw e;
+            }
+        }
+
         async function sendMessage() {
             const message = userInput.value.trim();
             if (!message) return;
@@ -1207,28 +1406,59 @@
                     throw new Error(data.error || '发生未知错误');
                 }
 
-                pendingFeedbackText = data.response;
-                const audioUrl = await prepareTtsAudio(data.response);
+                const chatResponseText = data.response;
+                pendingFeedbackText = chatResponseText;
+
+                // 切换 loading 提示为"正在准备语音"
+                const loadingEl = document.getElementById(loadingId);
+                if (loadingEl) {
+                    const loadingTitle = loadingEl.querySelector('.message-title');
+                    const loadingText = loadingEl.querySelector('.loading-text');
+                    if (loadingTitle) loadingTitle.textContent = '🎵 正在准备语音';
+                    if (loadingText) loadingText.textContent = '正在准备语音，请稍等...';
+                }
+
+                // 等 TTS 音频就绪后再展示文本，保证文本与播放同步
+                let preparedAudioUrl = null;
+                try {
+                    preparedAudioUrl = await prefetchTtsAudio(chatResponseText);
+                } catch (e) {
+                    console.warn('TTS 预加载失败:', e);
+                }
 
                 removeMessage(loadingId);
 
-                if (pendingFeedbackText !== data.response || !chatContainer.classList.contains('submitted')) {
+                if (pendingFeedbackText !== chatResponseText || !chatContainer.classList.contains('submitted')) {
                     return;
                 }
 
-                const speakerBtn = renderFeedbackMessage(data.response);
+                const speakerBtn = renderFeedbackMessage(chatResponseText);
                 pendingFeedbackText = '';
-                await startFeedbackPlayback(data.response, speakerBtn, audioUrl);
+                try {
+                    await startFeedbackPlayback(chatResponseText, speakerBtn, preparedAudioUrl);
+                } catch (ttsErr) {
+                    console.warn('TTS 播放失败，已降级为仅显示文本:', ttsErr);
+                    // TTS 失败不影响文本显示，用户仍可看到老师反馈
+                }
             } catch (error) {
                 removeMessage(loadingId);
                 pendingFeedbackText = '';
-                // 恢复 UI 状态，让用户可以重试
-                chatInputArea.classList.remove('hidden');
-                resetChallengeCompletionState();
+                // 保留 submitted 状态以允许页面滚动，只重置其他完成状态
+                if (completionDelayTimer) {
+                    clearTimeout(completionDelayTimer);
+                    completionDelayTimer = null;
+                }
+                isPreparingFeedbackAudio = false;
+                isManualFeedbackStopPending = false;
+                isFeedbackPlaybackActive = false;
+                removeCompletionCard();
+                feedbackPlaybackToken = 0;
+
                 userInput.value = message;
                 userInput.disabled = false;
                 sendBtn.disabled = false;
                 micBtn.disabled = false;
+                chatInputArea.classList.remove('hidden');
                 updateSendButtonState();
                 // 显示错误 + 重试按钮
                 const errMsg = error.message || '网络请求失败，请检查后端服务是否运行。';
@@ -1241,6 +1471,8 @@
                     sendMessage();
                 };
                 errorDiv.querySelector('.message-content').appendChild(retryBtn);
+                // 错误消息后自动滚动到底部，确保重试按钮可见
+                scrollToBottom();
             } finally {
                 isPreparingFeedbackAudio = false;
             }
@@ -1273,7 +1505,7 @@
                 speakerBtn.title = '朗读这段反馈';
                 speakerBtn.onclick = function() {
                     playButtonClickCue();
-                    startFeedbackPlayback(text, speakerBtn);
+                    startFeedbackPlayback(text, speakerBtn, speakerBtn._wavUrl || null);
                 };
                 msgDiv.appendChild(speakerBtn);
             } else if (sender === 'error') {

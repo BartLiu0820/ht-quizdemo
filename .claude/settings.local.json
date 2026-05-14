@@ -33,7 +33,10 @@
       "Bash(findstr -E \"5000|8000|8080|3000\")",
       "Bash(taskkill /PID 15136 /F)",
       "Bash(taskkill /PID 21884 /F)",
-      "Bash(powershell *)"
+      "Bash(powershell *)",
+      "WebSearch",
+      "WebFetch(domain:help.aliyun.com)",
+      "WebFetch(domain:bailian.console.aliyun.com)"
     ]
   }
 }

@@ -12,6 +12,7 @@ import subprocess
 import requests
 import dashscope
 from dashscope.audio.asr import Recognition, RecognitionCallback
+from dashscope.audio.tts import SpeechSynthesizer, ResultCallback as TtsResultCallback
 from flask import Flask, render_template, request, jsonify
 from flask_sock import Sock
 from dotenv import load_dotenv
@@ -31,6 +32,7 @@ _asr_semaphore = threading.Semaphore(6)   # ASR 并发上限（WebSocket + HTTP 
 _tts_semaphore = threading.Semaphore(4)   # TTS 并发上限（留余量避免限流）
 _chat_semaphore = threading.Semaphore(4)  # AI 对话并发上限
 SEMAPHORE_TIMEOUT = 30  # 秒，超时后返回"服务繁忙"
+TTS_PCM_SAMPLE_RATE = 22050  # CosyVoice 流式 PCM 采样率
 
 # 设置文件路径
 SETTINGS_FILE = os.path.join(os.path.dirname(__file__), 'settings.json')
@@ -536,23 +538,26 @@ def _preprocess_tts_text(text: str) -> str:
     # 用 ASCII 模式使 \w 只匹配 [a-zA-Z0-9_]，令汉字不构成词边界
     # 同时排除小数点前后，避免把 "3.14" 拆成 "三.十四"
     text = re.sub(r'(?<![.\w])\d+(?![.\w])', _replace_number, text, flags=re.ASCII)
+    # 剥除 Markdown 格式符及可能导致 TTS API 400 的特殊字符
+    # 包括 ASCII 反引号、全角重音号｀、修饰符重音ˋ 等，以及 * # _ > ~ | [ ] ( )
+    text = re.sub(r'[`｀ˋˇ*#_>~|\[\]()「」『』]', '', text)
     return text
 
 
 @app.route('/tts', methods=['POST'])
 def tts():
-    """调用 Qwen TTS 接口，将文本转为语音音频 URL"""
+    """调用 qwen3-tts 获取音频 URL，再由服务端代理字节流返回给前端"""
     data = request.json
     original_text = data.get('text')
 
     if not original_text:
         return jsonify({"error": "缺少文本"}), 400
 
-    text = _preprocess_tts_text(original_text)
-    print(f"[TTS] 收到请求，原文长度={len(original_text)}")
-    print(f"[TTS] 原文: {original_text!r}")
-    print(f"[TTS] 预处理: {text!r}")
+    api_key = get_dashscope_api_key()
+    if not api_key:
+        return jsonify({"error": "未配置 API Key"}), 500
 
+    text = _preprocess_tts_text(original_text)
     tts_log = {
         'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
         'client_ip': get_client_ip(),
@@ -561,66 +566,60 @@ def tts():
         'preprocessed': text,
     }
 
-    api_key = get_dashscope_api_key()
-    if not api_key:
-        return jsonify({"error": "未配置 API Key"}), 500
-
     if not _tts_semaphore.acquire(timeout=SEMAPHORE_TIMEOUT):
         return jsonify({"error": "TTS 服务繁忙，请稍后重试"}), 503
 
     try:
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-
-        payload = {
-            "model": "qwen3-tts-instruct-flash",
-            "input": {
-                "text": text,
-                "voice": "Ethan",
-                "language_type": "Chinese",
-                "instructions": "这是编程教学内容，其中英文编程术语（如 c out、c in、null ptr、static cast 等）请用清晰的英文字母发音朗读，其余中文内容保持自然语调。",
-                "optimize_instructions": True
-            }
-        }
-
-        response = http_session.post(
+        resp = http_session.post(
             'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
-            headers=headers,
-            json=payload,
-            timeout=30
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": "qwen3-tts-instruct-flash",
+                "input": {
+                    "text": text,
+                    "voice": "Ethan",
+                    "language_type": "Chinese",
+                    "instructions": "这是编程教学内容，其中英文编程术语（如 c out、c in、null ptr、static cast 等）请用清晰的英文字母发音朗读，其余中文内容保持自然语调。",
+                    "optimize_instructions": True,
+                },
+            },
+            timeout=30,
         )
-        if not response.ok:
-            print(f"[TTS] HTTP {response.status_code}: {response.text}")
-        response.raise_for_status()
+        resp.raise_for_status()
+        audio_url = resp.json().get('output', {}).get('audio', {}).get('url')
+        if not audio_url:
+            raise RuntimeError(f"接口未返回 URL: {resp.text[:200]}")
 
-        response_data = response.json()
-        audio_url = response_data.get('output', {}).get('audio', {}).get('url')
+        # 代理音频字节流，让前端尽早开始播放
+        audio_resp = http_session.get(audio_url, stream=True, timeout=30)
+        audio_resp.raise_for_status()
+        content_type = audio_resp.headers.get('Content-Type', 'audio/wav')
 
-        if audio_url:
-            tts_log['status'] = 'success'
-            with _log_lock:
-                try:
-                    with open(PLAYER_LOG_FILE, 'a', encoding='utf-8') as f:
-                        f.write(json.dumps(tts_log, ensure_ascii=False) + '\n')
-                except Exception as log_err:
-                    print(f"[TTS] 写日志失败: {log_err}")
-            return jsonify({"audio_url": audio_url})
-        else:
-            print("TTS Unexpected Response:", response_data)
-            tts_log['status'] = 'error'
-            tts_log['error'] = str(response_data)
-            with _log_lock:
-                try:
-                    with open(PLAYER_LOG_FILE, 'a', encoding='utf-8') as f:
-                        f.write(json.dumps(tts_log, ensure_ascii=False) + '\n')
-                except Exception as log_err:
-                    print(f"[TTS] 写日志失败: {log_err}")
-            return jsonify({"error": "接口未返回音频 URL"}), 500
+        tts_log['status'] = 'success'
+        with _log_lock:
+            try:
+                with open(PLAYER_LOG_FILE, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps(tts_log, ensure_ascii=False) + '\n')
+            except Exception:
+                pass
+
+        def generate():
+            try:
+                for chunk in audio_resp.iter_content(chunk_size=8192):
+                    if chunk:
+                        yield chunk
+            finally:
+                _tts_semaphore.release()
+
+        from flask import stream_with_context
+        return app.response_class(
+            stream_with_context(generate()),
+            mimetype=content_type,
+            headers={'Cache-Control': 'no-cache'},
+        )
 
     except Exception as e:
-        print(f"TTS Error: {e}")
+        _tts_semaphore.release()
         tts_log['status'] = 'error'
         tts_log['error'] = str(e)
         with _log_lock:
@@ -629,9 +628,96 @@ def tts():
                     f.write(json.dumps(tts_log, ensure_ascii=False) + '\n')
             except Exception:
                 pass
-        return jsonify({"error": f"语音生成失败: {str(e)}"}), 500
+        return jsonify({"error": f"语音生成失败: {e}"}), 500
+
+@sock.route('/ws/tts')
+def tts_ws(ws):
+    """流式 TTS：用 SpeechSynthesizer 推送 PCM 帧，前端用 Web Audio API 实时播放"""
+    if not _dashscope_api_key:
+        ws.send(json.dumps({'type': 'error', 'error': '未配置 API Key'}, ensure_ascii=False))
+        return
+
+    if not _tts_semaphore.acquire(timeout=SEMAPHORE_TIMEOUT):
+        ws.send(json.dumps({'type': 'error', 'error': 'TTS 服务繁忙，请稍后重试'}, ensure_ascii=False))
+        return
+
+    try:
+        message = ws.receive()
+        if message is None:
+            return
+        try:
+            data = json.loads(message)
+        except (json.JSONDecodeError, TypeError):
+            ws.send(json.dumps({'type': 'error', 'error': '无效请求'}, ensure_ascii=False))
+            return
+
+        original_text = data.get('text', '')
+        if not original_text:
+            ws.send(json.dumps({'type': 'error', 'error': '缺少文本'}, ensure_ascii=False))
+            return
+
+        text = _preprocess_tts_text(original_text)
+        tts_log = {
+            'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+            'type': 'tts',
+            'original': original_text,
+            'preprocessed': text,
+        }
+
+        ws_ref = ws
+        error_flag = [False]
+
+        class _StreamCallback(TtsResultCallback):
+            def on_open(self): pass
+
+            def on_event(self, result):
+                frame = result.get_audio_frame()
+                if frame:
+                    try:
+                        ws_ref.send(bytes(frame))
+                    except Exception:
+                        error_flag[0] = True
+
+            def on_complete(self):
+                try:
+                    ws_ref.send(json.dumps({'type': 'complete'}, ensure_ascii=False))
+                except Exception:
+                    pass
+
+            def on_error(self, response):
+                error_flag[0] = True
+                try:
+                    ws_ref.send(json.dumps({'type': 'error', 'error': str(response)}, ensure_ascii=False))
+                except Exception:
+                    pass
+
+            def on_close(self): pass
+
+        SpeechSynthesizer.call(
+            model='cosyvoice-v2',
+            text=text,
+            voice='longshu',
+            callback=_StreamCallback(),
+            format=SpeechSynthesizer.AudioFormat.format_pcm,
+            sample_rate=TTS_PCM_SAMPLE_RATE,
+        )
+
+        tts_log['status'] = 'error' if error_flag[0] else 'success'
+        with _log_lock:
+            try:
+                with open(PLAYER_LOG_FILE, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps(tts_log, ensure_ascii=False) + '\n')
+            except Exception:
+                pass
+
+    except Exception as e:
+        try:
+            ws.send(json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False))
+        except Exception:
+            pass
     finally:
         _tts_semaphore.release()
+
 
 @sock.route('/ws/asr')
 def asr_stream(ws):
